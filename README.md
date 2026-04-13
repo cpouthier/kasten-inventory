@@ -1,6 +1,6 @@
 # Veeam Kasten Inventory Collector
 
-**`veeam-kasten-inventory.html` v1.1.0** — A self-contained Bash script that collects Kubernetes cluster and Veeam Kasten K10 information and generates a single, portable HTML report.
+**`veeam-kasten-inventory.html` v1.1.0** — A self-contained Bash script that collects Kubernetes cluster and Veeam Kasten information and generates a single, portable HTML report.
 
 The report can be shared, opened offline in any browser, and requires no external dependencies at viewing time.
 
@@ -19,7 +19,7 @@ The report can be shared, opened offline in any browser, and requires no externa
 | **Operators (OLM)** | ClusterServiceVersions if OLM is installed |
 | **Network Policies** | All namespaces |
 | **Events** | All namespaces |
-| **Veeam Kasten K10** | Pods, ConfigMaps, Policies, Location Profiles, Policy Presets, Restore Points, BackupActions, RunActions, PolicyRunActions, Helm values (optional) |
+| **Veeam Kasten** | Pods, ConfigMaps, Policies, Location Profiles, Policy Presets, Restore Points, BackupActions, RunActions, PolicyRunActions, Helm values (optional) |
 
 > If the `kasten-io` namespace is not found, the report is still generated — the Kasten section is simply empty.
 
@@ -176,7 +176,7 @@ rules:
 
 ![Cluster Overview](img/clusteroverview.png)
 
-*The summary header shows distribution type, Kubernetes version, node count, namespace count, and Kasten K10 version.*
+*The summary header shows distribution type, Kubernetes version, node count, namespace count, and Veeam Kasten version.*
 
 ### Namespaces
 
@@ -208,25 +208,3 @@ rules:
 
 *Best practice checks and recommendations for your Kasten installation.*
 
----
-
-## Security notes
-
-- The script is **read-only** — it never creates, modifies, or deletes any cluster resource.
-- Use `--no-helm` to avoid collecting Kasten Helm release secrets (which may contain sensitive configuration values).
-- Use `--no-ip-services` when sharing reports externally to mask IP addresses in the Services section.
-
----
-
-## Supported distributions
-
-Automatically detected and labeled in the report:
-
-- Kubernetes (generic)
-- K3s
-- OpenShift
-- Rancher / RKE
-- AKS (Azure)
-- EKS (AWS)
-- GKE (Google Cloud)
-- Harvester
