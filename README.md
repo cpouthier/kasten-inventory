@@ -1,6 +1,6 @@
 # Veeam Kasten Inventory Collector
 
-**`veeam-kasten-inventory.html` v1.1.0** — A self-contained Bash script that collects Kubernetes cluster and Veeam Kasten information and generates a single, portable HTML report.
+**`veeam-kasten-inventory.sh` v1.1.0** — A self-contained Bash script that collects Kubernetes cluster and Veeam Kasten information and generates a single, portable HTML report.
 
 The report can be shared, opened offline in any browser, and requires no external dependencies at viewing time.
 
@@ -60,10 +60,8 @@ git clone https://github.com/cpouthier/kasten-inventory.git
 cd kasten-inventory
 
 # Make the script executable
-chmod +x veeam-kasten-inventory.html
+chmod +x veeam-kasten-inventory.sh
 ```
-
-> The file has a `.html` extension but is a valid Bash script (`#!/usr/bin/env bash`). The extension is intentional — it has no effect on execution.
 
 ---
 
@@ -72,7 +70,7 @@ chmod +x veeam-kasten-inventory.html
 ### Basic (uses current kubeconfig context)
 
 ```bash
-./veeam-kasten-inventory.html
+./veeam-kasten-inventory.sh
 ```
 
 The HTML report is written to `./build/` by default.
@@ -80,7 +78,7 @@ The HTML report is written to `./build/` by default.
 ### All options
 
 ```bash
-./veeam-kasten-inventory.html [OPTIONS]
+./veeam-kasten-inventory.sh [OPTIONS]
 
 OPTIONS:
   --kubeconfig <path>      Path to the kubeconfig file
@@ -99,16 +97,16 @@ OPTIONS:
 
 ```bash
 # Use a specific context and output to /tmp
-./veeam-kasten-inventory.html --context prod-cluster --output-dir /tmp/reports
+./veeam-kasten-inventory.sh --context prod-cluster --output-dir /tmp/reports
 
 # Skip Helm values and mask IPs (for sharing reports externally)
-./veeam-kasten-inventory.html --no-helm --no-ip-services
+./veeam-kasten-inventory.sh --no-helm --no-ip-services
 
 # Target a specific kubeconfig with a longer timeout (large clusters)
-./veeam-kasten-inventory.html --kubeconfig ~/.kube/prod.yaml --timeout 120
+./veeam-kasten-inventory.sh --kubeconfig ~/.kube/prod.yaml --timeout 120
 
 # Run against a remote cluster context
-./veeam-kasten-inventory.html --context aks-westeurope --output-dir ./reports/aks-westeurope
+./veeam-kasten-inventory.sh --context aks-westeurope --output-dir ./reports/aks-westeurope
 ```
 
 ---
