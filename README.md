@@ -1,5 +1,3 @@
-![Veeam Kasten](https://raw.githubusercontent.com/cpouthier/tutorial/main/k10gh.png)
-
 # Veeam Kasten Inventory Collector
 
 **`veeam-kasten-inventory.html` v1.1.0** — A self-contained Bash script that collects Kubernetes cluster and Veeam Kasten K10 information and generates a single, portable HTML report.
@@ -176,35 +174,39 @@ rules:
 
 ### Cluster Overview
 
-![Cluster Overview](screenshots/cluster-overview.png)
+![Cluster Overview](img/clusteroverview.png)
 
 *The summary header shows distribution type, Kubernetes version, node count, namespace count, and Kasten K10 version.*
 
+### Namespaces
+
+![Namespaces](img/namespaces.png)
+
+*All namespaces with status and age.*
+
 ### Nodes
 
-![Nodes](screenshots/nodes.png)
+![Nodes](img/nodes.png)
 
 *Node table with role, status, CPU/memory capacity and live usage (when metrics-server is available).*
 
 ### Veeam Kasten — Policies
 
-![Kasten Policies](screenshots/kasten-policies.png)
+![Kasten Policies](img/policies.png)
 
 *All backup policies with schedule, retention settings, and last run status.*
 
 ### Veeam Kasten — Location Profiles
 
-![Kasten Profiles](screenshots/kasten-profiles.png)
+![Kasten Profiles](img/profiles.png)
 
 *Object store and infrastructure profiles configured in Kasten, with endpoint and bucket details.*
 
-### Storage
+### Veeam Kasten — Best Practices
 
-![Storage](screenshots/storage.png)
+![Best Practices](img/bestpractices.png)
 
-*StorageClasses, PVs, and PVCs with status, capacity, access modes, and CSI driver information.*
-
-> Screenshots above are illustrative — add your own by placing images in a `screenshots/` folder.
+*Best practice checks and recommendations for your Kasten installation.*
 
 ---
 
