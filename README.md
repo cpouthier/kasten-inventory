@@ -169,7 +169,7 @@ rules:
 
 ---
 
-## Screenshots
+## Screenshots (some...)
 
 ### Cluster Overview
 
