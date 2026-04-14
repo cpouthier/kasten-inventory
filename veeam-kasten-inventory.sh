@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# veeam-kasten-collector.sh  v1.1.0
+# veeam-kasten-collector.sh  v1.2.0
 #
 # Bash port of the veeam-kasten-collector Go collector.
 # Generates a self-contained HTML report of a Kubernetes cluster state
@@ -13,7 +13,7 @@
 set -euo pipefail
  
 # ─── Metadata ────────────────────────────────────────────────────────────────
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.2.0"
 SCRIPT_NAME="$(basename "$0")"
  
 # ─── ANSI Colors ─────────────────────────────────────────────────────────────
@@ -43,7 +43,7 @@ usage() {
   cat <<EOF
 ${BOLD}${SCRIPT_NAME} v${SCRIPT_VERSION}${NC} — Veeam Kasten Cluster Inventory Collector
  
-Collects Kubernetes cluster and Kasten K10 information,
+Collects Kubernetes cluster and Veeam Kasten information,
 then generates a self-contained HTML report.
  
 ${BOLD}USAGE:${NC}
@@ -240,7 +240,7 @@ collect_raw_data() {
       echo '{"items":[]}' > "$TMP_DIR/kasten_runactions.json"
     jq empty "$TMP_DIR/kasten_runactions.json" 2>/dev/null || \
       echo '{"items":[]}' > "$TMP_DIR/kasten_runactions.json"
- 
+
     # BackupActions (all namespaces — for failed backup detection)
     log_info "Kasten BackupActions (all namespaces)..."
     kube_safe get backupactions.actions.kio.kasten.io --all-namespaces -o json \
@@ -258,8 +258,49 @@ collect_raw_data() {
     else
       echo '{"items":[]}' > "$TMP_DIR/kasten_helm_secrets.json"
     fi
+
+    # Blueprints (Kanister) — all namespaces (may live outside kasten-io)
+    log_info "Kasten Blueprints..."
+    kube_safe get blueprints.cr.kanister.io --all-namespaces -o json \
+      > "$TMP_DIR/kasten_blueprints.json" 2>/dev/null || \
+      echo '{"items":[]}' > "$TMP_DIR/kasten_blueprints.json"
+    jq empty "$TMP_DIR/kasten_blueprints.json" 2>/dev/null || \
+      echo '{"items":[]}' > "$TMP_DIR/kasten_blueprints.json"
+
+    # BlueprintBindings — all namespaces
+    log_info "Kasten BlueprintBindings..."
+    kube_safe get blueprintbindings.config.kio.kasten.io --all-namespaces -o json \
+      > "$TMP_DIR/kasten_blueprintbindings.json" 2>/dev/null || \
+      echo '{"items":[]}' > "$TMP_DIR/kasten_blueprintbindings.json"
+    jq empty "$TMP_DIR/kasten_blueprintbindings.json" 2>/dev/null || \
+      echo '{"items":[]}' > "$TMP_DIR/kasten_blueprintbindings.json"
+
+    # TransformSets — all namespaces
+    log_info "Kasten TransformSets..."
+    kube_safe get transformsets.config.kio.kasten.io --all-namespaces -o json \
+      > "$TMP_DIR/kasten_transformsets.json" 2>/dev/null || \
+      echo '{"items":[]}' > "$TMP_DIR/kasten_transformsets.json"
+    jq empty "$TMP_DIR/kasten_transformsets.json" 2>/dev/null || \
+      echo '{"items":[]}' > "$TMP_DIR/kasten_transformsets.json"
+
+    # ReportActions
+    log_info "Kasten ReportActions..."
+    kube_safe get reportactions.actions.kio.kasten.io -n kasten-io -o json \
+      > "$TMP_DIR/kasten_reportactions.json" 2>/dev/null || \
+      echo '{"items":[]}' > "$TMP_DIR/kasten_reportactions.json"
+    jq empty "$TMP_DIR/kasten_reportactions.json" 2>/dev/null || \
+      echo '{"items":[]}' > "$TMP_DIR/kasten_reportactions.json"
+
+    # RestoreActions — all namespaces
+    log_info "Kasten RestoreActions..."
+    kube_safe get restoreactions.actions.kio.kasten.io --all-namespaces -o json \
+      > "$TMP_DIR/kasten_restoreactions.json" 2>/dev/null || \
+      echo '{"items":[]}' > "$TMP_DIR/kasten_restoreactions.json"
+    jq empty "$TMP_DIR/kasten_restoreactions.json" 2>/dev/null || \
+      echo '{"items":[]}' > "$TMP_DIR/kasten_restoreactions.json"
+
   else
-    log_warn "Namespace kasten-io not found — Kasten K10 not installed"
+    log_warn "Namespace kasten-io not found — Veeam Kasten not installed"
     echo '{"items":[]}' > "$TMP_DIR/kasten_pods.json"
     echo '{"items":[]}' > "$TMP_DIR/kasten_cms.json"
     echo '{"items":[]}' > "$TMP_DIR/kasten_policies.json"
@@ -271,6 +312,11 @@ collect_raw_data() {
     echo '{"items":[]}' > "$TMP_DIR/kasten_runactions.json"
     echo '{"items":[]}' > "$TMP_DIR/kasten_backupactions.json"
     echo '{"items":[]}' > "$TMP_DIR/kasten_helm_secrets.json"
+    echo '{"items":[]}' > "$TMP_DIR/kasten_blueprints.json"
+    echo '{"items":[]}' > "$TMP_DIR/kasten_blueprintbindings.json"
+    echo '{"items":[]}' > "$TMP_DIR/kasten_transformsets.json"
+    echo '{"items":[]}' > "$TMP_DIR/kasten_reportactions.json"
+    echo '{"items":[]}' > "$TMP_DIR/kasten_restoreactions.json"
   fi
  
   # Node metrics (kubectl top — optional)
@@ -711,10 +757,13 @@ def process_storage():
     vscs = []
     for vsc in items(load("vsc.json", {"items": []})):
         meta = vsc.get("metadata", {})
+        ann  = meta.get("annotations", {}) or {}
+        is_default_vsc = ann.get("snapshot.storage.kubernetes.io/is-default-class") == "true"
         vscs.append({
             "name":            meta.get("name", ""),
             "driver":          vsc.get("driver", ""),
             "deletion_policy": vsc.get("deletionPolicy", ""),
+            "is_default":      is_default_vsc,
             "age":             calc_age(meta.get("creationTimestamp", "")),
         })
  
@@ -1004,6 +1053,76 @@ def process_kasten():
     all_crds = {c.get("name","") for c in items(load("crds.json",{"items":[]}))}
     crds_installed = any(c in all_crds for c in kasten_crds)
  
+    # ── Blueprints ───────────────────────────────────────────────────────────
+    blueprints = []
+    for bp in items(load("kasten_blueprints.json", {"items": []})):
+        meta_bp = bp.get("metadata", {})
+        spec_bp = bp.get("spec", {})
+        actions_bp = list(spec_bp.get("actions", {}).keys()) if isinstance(spec_bp.get("actions"), dict) else []
+        blueprints.append({
+            "name":      meta_bp.get("name", ""),
+            "namespace": meta_bp.get("namespace", "kasten-io"),
+            "actions":   actions_bp,
+            "age":       calc_age(meta_bp.get("creationTimestamp", "")),
+        })
+
+    # ── BlueprintBindings ─────────────────────────────────────────────────────
+    blueprint_bindings = []
+    for bb in items(load("kasten_blueprintbindings.json", {"items": []})):
+        meta_bb = bb.get("metadata", {})
+        spec_bb = bb.get("spec", {})
+        blueprint_bindings.append({
+            "name":      meta_bb.get("name", ""),
+            "namespace": meta_bb.get("namespace", "kasten-io"),
+            "blueprint": spec_bb.get("blueprintRef", {}).get("name", "—"),
+            "subject":   spec_bb.get("subject", {}).get("name", "—"),
+            "age":       calc_age(meta_bb.get("creationTimestamp", "")),
+        })
+
+    # ── TransformSets ─────────────────────────────────────────────────────────
+    transform_sets = []
+    for ts in items(load("kasten_transformsets.json", {"items": []})):
+        meta_ts = ts.get("metadata", {})
+        spec_ts = ts.get("spec", {})
+        transform_sets.append({
+            "name":       meta_ts.get("name", ""),
+            "namespace":  meta_ts.get("namespace", "kasten-io"),
+            "transforms": len(spec_ts.get("transforms", [])),
+            "age":        calc_age(meta_ts.get("creationTimestamp", "")),
+        })
+
+    # ── Reports ───────────────────────────────────────────────────────────────
+    report_policy = next(
+        (p for p in policies if p["name"] == "k10-system-reports-policy"), None
+    )
+    report_actions = []
+    for ra in items(load("kasten_reportactions.json", {"items": []})):
+        meta_ra = ra.get("metadata", {})
+        st_ra   = ra.get("status", {})
+        report_actions.append({
+            "name":  meta_ra.get("name", ""),
+            "state": st_ra.get("state", "Unknown"),
+            "age":   calc_age(meta_ra.get("creationTimestamp", "")),
+        })
+    report_actions.sort(key=lambda x: x["age"])
+
+    # ── RestoreActions ────────────────────────────────────────────────────────
+    restore_actions = []
+    for rsa in items(load("kasten_restoreactions.json", {"items": []})):
+        meta_rsa = rsa.get("metadata", {})
+        st_rsa   = rsa.get("status", {})
+        err_rsa  = st_rsa.get("error", {})
+        err_msg  = err_rsa.get("message", "") if isinstance(err_rsa, dict) else ""
+        restore_actions.append({
+            "name":      meta_rsa.get("name", ""),
+            "namespace": meta_rsa.get("namespace", ""),
+            "state":     st_rsa.get("state", "Unknown"),
+            "error":     err_msg,
+            "age":       calc_age(meta_rsa.get("creationTimestamp", "")),
+            "ts":        meta_rsa.get("creationTimestamp", ""),
+        })
+    restore_actions.sort(key=lambda x: x["ts"], reverse=True)
+
     return {
         "installed":          installed,
         "crds_installed":     crds_installed,
@@ -1016,6 +1135,12 @@ def process_kasten():
         "dr_info":            dr_info,
         "last_restore_point": calc_age(last_rp_time) if last_rp_time else "—",
         "helm_values":        helm_values_yaml,
+        "blueprints":         blueprints,
+        "blueprint_bindings": blueprint_bindings,
+        "transform_sets":     transform_sets,
+        "report_policy":      report_policy,
+        "report_actions":     report_actions,
+        "restore_actions":    restore_actions,
     }
  
 # ─── Namespace Protection ─────────────────────────────────────────────────────
@@ -1137,10 +1262,10 @@ def process_failed_backup_actions():
             return deeper if deeper else msg
         except Exception:
             return msg
- 
+
     by_policy = {}
     by_ns     = {}
- 
+
     for ba in items(load("kasten_backupactions.json", {"items": []})):
         status = ba.get("status") or {}
         if status.get("state") != "Failed":
@@ -1157,7 +1282,7 @@ def process_failed_backup_actions():
             display_msg = top_msg
         if len(display_msg) > 180:
             display_msg = display_msg[:180] + "\u2026"
- 
+
         entry = {
             "ns":          ns,
             "policy":      policy,
@@ -1170,9 +1295,9 @@ def process_failed_backup_actions():
             by_policy[policy] = entry
         if ns and (ns not in by_ns or ts > by_ns[ns]["timestamp"]):
             by_ns[ns] = entry
- 
+
     return {"by_policy": by_policy, "by_ns": by_ns}
- 
+
 # ─── Network / CNI ───────────────────────────────────────────────────────────
 def process_network():
     cni_type = "Unknown"
@@ -1281,16 +1406,16 @@ failed_backup_actions = process_failed_backup_actions()
 total_pods   = len(pods)
 running_pods = sum(1 for p in pods if p["status"] == "Running")
 warn_events  = sum(1 for e in events if e["type"] == "Warning")
- 
+
 # Policies with a recent failed BackupAction (source of truth for failure status)
 failed_policies = [
     p for p in kasten["policies"]
     if p["name"] in failed_backup_actions["by_policy"]
 ]
- 
+
 # Namespaces with at least one failed BackupAction
 failed_ns_set = set(failed_backup_actions["by_ns"].keys())
- 
+
 # Protected = has a policy AND no recent failure
 protected_ns = sum(
     1 for ns, info in ns_protection.items()
@@ -1335,56 +1460,56 @@ def render_overview():
         if failed_policies else
         '<span class="badge badge-green">All OK</span>'
     )
- 
+
     return f"""
 <section id="overview">
   <details class="section-toggle" open>
     <summary class="section-summary"><h2>Overview</h2></summary>
     <div class="section-body">
     <div class="cards-grid">
-      <div class="card">
+      <a href="#overview" class="card-link"><div class="card clickable">
         <div class="card-icon">&#x2388;</div>
         <div class="card-title">Cluster</div>
         <div class="card-value">{h(CONTEXT)}</div>
         <div class="card-sub">Version {h(server_version)}</div>
-      </div>
-      <div class="card">
+      </div></a>
+      <a href="#overview" class="card-link"><div class="card clickable">
         <div class="card-icon">&#x1F4E6;</div>
         <div class="card-title">Distribution</div>
         <div class="card-value">{h(dist_type)}</div>
         <div class="card-sub">{h(platform)}</div>
-      </div>
-      <div class="card">
+      </div></a>
+      <a href="#nodes" class="card-link"><div class="card clickable">
         <div class="card-icon">&#x1F5A5;</div>
         <div class="card-title">Nodes</div>
         <div class="card-value">{len(nodes)}</div>
         <div class="card-sub">{sum(1 for n in nodes if n['status']=='Ready')} Ready</div>
-      </div>
-      <div class="card">
+      </div></a>
+      <a href="#pods" class="card-link"><div class="card clickable">
         <div class="card-icon">&#x1F4BB;</div>
         <div class="card-title">Pods</div>
         <div class="card-value">{total_pods}</div>
         <div class="card-sub">{running_pods} Running</div>
-      </div>
-      <div class="card">
+      </div></a>
+      <a href="#kasten-namespaces" class="card-link"><div class="card clickable">
         <div class="card-icon">&#x1F4C1;</div>
         <div class="card-title">Namespaces</div>
         <div class="card-value">{ns_count}</div>
         <div class="card-sub">{ns_prot_badge} protected{ns_fail_badge}</div>
-      </div>
-      <div class="card">
+      </div></a>
+      <a href="#storage" class="card-link"><div class="card clickable">
         <div class="card-icon">&#x1F4BE;</div>
         <div class="card-title">PVCs</div>
         <div class="card-value">{len(storage['pvcs'])}</div>
         <div class="card-sub">Default SC: {h(sc_default)}</div>
-      </div>
-      <div class="card">
+      </div></a>
+      <a href="#kasten" class="card-link"><div class="card clickable">
         <div class="card-icon">&#x1F6E1;</div>
         <div class="card-title">Veeam Kasten</div>
         <div class="card-value">{kasten_status}</div>
         <div class="card-sub">{kasten['running_pods']}/{kasten['total_pods']} pods running</div>
-      </div>
-      <div class="card{'  card-warn' if failed_policies else ''}">
+      </div></a>
+      <a href="#kasten-backup-policies" class="card-link"><div class="card{'  card-warn' if failed_policies else ''} clickable">
         <div class="card-icon">&#x1F4CB;</div>
         <div class="card-title">Backup Policies</div>
         <div class="card-value">{len(kasten['policies'])}</div>
@@ -1392,19 +1517,19 @@ def render_overview():
           {failed_badge}
           {'&nbsp;<span class="badge badge-orange">' + str(ns_count - protected_ns - failed_ns_count) + ' ns unprotected</span>' if (ns_count - protected_ns - failed_ns_count) > 0 else ""}
         </div>
-      </div>
-      <div class="card">
+      </div></a>
+      <a href="#network" class="card-link"><div class="card clickable">
         <div class="card-icon">&#x1F310;</div>
         <div class="card-title">Network (CNI)</div>
         <div class="card-value">{cni_badge}</div>
         <div class="card-sub">{network['np_count']} NetworkPolicies</div>
-      </div>
-      <div class="card{'  card-warn' if warn_events > 0 else ''}">
+      </div></a>
+      <a href="#events" class="card-link"><div class="card{'  card-warn' if warn_events > 0 else ''} clickable">
         <div class="card-icon">&#x26A0;</div>
         <div class="card-title">Warning Events</div>
         <div class="card-value {'text-warn' if warn_events > 0 else ''}">{warn_events}</div>
         <div class="card-sub">{len(events)} total events</div>
-      </div>
+      </div></a>
     </div>
     </div>
   </details>
@@ -1546,11 +1671,31 @@ def render_services():
 """
  
 def render_storage():
+    # Build driver → list of VolumeSnapshotClass objects for quick lookup
+    _driver_vscs = {}
+    for _v in storage["vscs"]:
+        _driver_vscs.setdefault(_v["driver"], []).append(_v)
+
     sc_rows = ""
     for sc in storage["storage_classes"]:
         default_badge = '<span class="badge badge-blue">default</span>' if sc["is_default"] else ""
         expand_badge  = '<span class="badge badge-green">yes</span>' if sc["expandable"] \
                         else '<span class="badge badge-gray">no</span>'
+
+        # VolumeSnapshotClass cell — one badge per matching VSC
+        matched_vscs = _driver_vscs.get(sc["provisioner"], [])
+        if matched_vscs:
+            vsc_badges = []
+            for _v in matched_vscs:
+                _def = '<span class="badge badge-blue" style="font-size:10px">default</span>&nbsp;' \
+                       if _v["is_default"] else ""
+                vsc_badges.append(
+                    f'{_def}<span class="badge badge-green">{h(_v["name"])}</span>'
+                )
+            vsc_cell = " ".join(vsc_badges)
+        else:
+            vsc_cell = '<span class="badge badge-gray">—</span>'
+
         sc_rows += table_row(
             h(sc["name"]) + " " + default_badge,
             h(sc["provisioner"]),
@@ -1558,6 +1703,7 @@ def render_storage():
             h(sc["binding_mode"]),
             expand_badge,
             str(sc["pv_count"]),
+            vsc_cell,
         )
  
     pv_rows = ""
@@ -1570,7 +1716,8 @@ def render_storage():
             h(", ".join(pv["access_modes"])),
             h(pv["reclaim"]),
             h(pv["volume_mode"]),
-            h(pv["claim"] or "—"),
+            (f'<a href="#pvc-{pv["claim"].replace("/", "-")}">{h(pv["claim"])}</a>'
+             if pv.get("claim") else "—"),
             h(pv["age"]),
         )
  
@@ -1579,6 +1726,19 @@ def render_storage():
     for ns in sorted(pvcs_by_ns):
         rows = ""
         for pvc in pvcs_by_ns[ns]:
+            pvc_anchor_id = f'pvc-{ns}-{pvc["name"]}'
+            rows += f'<tr id="{pvc_anchor_id}"><td>{h(pvc["name"])}</td>'
+            rows += "".join(f"<td>{c}</td>" for c in [
+                status_badge(pvc["status"]),
+                h(pvc["capacity"]),
+                h(pvc["storage_class"]),
+                h(", ".join(pvc["access_modes"])),
+                h(pvc["volume_mode"]),
+                h(pvc["volume"] or "—"),
+                h(pvc["age"]),
+            ]) + "</tr>\n"
+            continue
+        for pvc in []:  # dead loop – rows built above
             rows += table_row(
                 h(pvc["name"]),
                 status_badge(pvc["status"]),
@@ -1628,26 +1788,7 @@ def render_storage():
   <details class="section-toggle">
     <summary class="section-summary"><h2>Storage</h2></h2></summary>
     <div class="section-body">
- 
-    <h3>StorageClasses <span class="count">{len(storage['storage_classes'])}</span></h3>
-    <div class="table-wrap">
-      <table class="data-table">
-        {th_row("Name","Provisioner","ReclaimPolicy","BindingMode","Expandable","PVs")}
-        <tbody>{sc_rows}</tbody>
-      </table>
-    </div>
- 
-    <h3>PersistentVolumes <span class="count">{len(storage['pvs'])}</span></h3>
-    <div class="table-wrap">
-      <table class="data-table">
-        {th_row("Name","Status","Capacity","StorageClass","Modes","Reclaim","VolumeMode","Claim","Age")}
-        <tbody>{pv_rows}</tbody>
-      </table>
-    </div>
- 
-    <h3>PersistentVolumeClaims <span class="count">{len(storage['pvcs'])}</span></h3>
-    {pvc_rows_by_ns}
- 
+
     <h3>CSI Drivers <span class="count">{len(storage['csi_drivers'])}</span></h3>
     <div class="table-wrap">
       <table class="data-table">
@@ -1655,7 +1796,15 @@ def render_storage():
         <tbody>{csi_rows}</tbody>
       </table>
     </div>
- 
+
+    <h3>StorageClasses <span class="count">{len(storage['storage_classes'])}</span></h3>
+    <div class="table-wrap">
+      <table class="data-table">
+        {th_row("Name","Provisioner","ReclaimPolicy","BindingMode","Expandable","PVs","VolumeSnapshotClass")}
+        <tbody>{sc_rows}</tbody>
+      </table>
+    </div>
+
     <h3>VolumeSnapshotClasses <span class="count">{len(storage['vscs'])}</span></h3>
     {"<p class='empty'>No VolumeSnapshotClass detected</p>" if not storage['vscs'] else f'''
     <div class="table-wrap">
@@ -1664,6 +1813,18 @@ def render_storage():
         <tbody>{vsc_rows}</tbody>
       </table>
     </div>'''}
+
+    <h3>PersistentVolumes <span class="count">{len(storage['pvs'])}</span></h3>
+    <div class="table-wrap">
+      <table class="data-table">
+        {th_row("Name","Status","Capacity","StorageClass","Modes","Reclaim","VolumeMode","Claim","Age")}
+        <tbody>{pv_rows}</tbody>
+      </table>
+    </div>
+
+    <h3>PersistentVolumeClaims <span class="count">{len(storage['pvcs'])}</span></h3>
+    {pvc_rows_by_ns}
+
     </div>
   </details>
 </section>
@@ -1780,7 +1941,7 @@ def _parse_storage_bytes(cap_str):
         return int(cap_str)
     except ValueError:
         return 0
- 
+
 def _fmt_storage(total_bytes):
     """Format a byte count as a human-readable string (Gi / Mi / Ki)."""
     if total_bytes >= 1024**3:
@@ -1790,7 +1951,7 @@ def _fmt_storage(total_bytes):
     if total_bytes >= 1024:
         return f"{total_bytes / 1024:.0f} Ki"
     return f"{total_bytes} B"
- 
+
 # Build per-namespace PVC stats (count + total capacity)
 _ns_pvcs = {}
 for _pvc in storage.get("pvcs", []):
@@ -1800,34 +1961,57 @@ for _pvc in storage.get("pvcs", []):
         _ns_pvcs[_ns] = {"count": 0, "bytes": 0}
     _ns_pvcs[_ns]["count"] += 1
     _ns_pvcs[_ns]["bytes"] += _bytes
- 
+
 def render_namespaces():
     """
     Returns a <div id="kasten-namespaces"> block for integration inside the
     Veeam Kasten section.  Includes a Location Profile column showing which
     export profile each policy uses for the namespace, plus PVC count and total
-    storage per namespace.
+    storage per namespace, and a Last Restore column.
     """
     # Build immutable profile set for badge colouring
     immutable_profiles = {p["name"] for p in kasten["profiles"] if p["immutable"]}
+
+    # Build per-namespace latest RestoreAction map
+    ns_last_restore = {}  # ns -> latest RestoreAction dict
+    for rsa in kasten.get("restore_actions", []):
+        ns = rsa["namespace"]
+        existing = ns_last_restore.get(ns)
+        if existing is None or rsa["ts"] > existing["ts"]:
+            ns_last_restore[ns] = rsa
  
     rows = ""
     for ns_name in sorted(ns_protection.keys()):
         info = ns_protection[ns_name]
         ba_fail = failed_backup_actions["by_ns"].get(ns_name)
- 
+
         if info["protected"]:
-            if ba_fail:
-                prot_badge = '<span class="badge badge-red">&#x2716; Failed</span>'
+            # For kasten-io: only k10-disaster-recovery-policy counts for protection
+            if ns_name == "kasten-io":
+                dr_pol_present = "k10-disaster-recovery-policy" in info["policies"]
+                display_policies = ["k10-disaster-recovery-policy"] if dr_pol_present else []
+                is_protected_here = dr_pol_present
+                if not is_protected_here:
+                    prot_badge = '<span class="badge badge-orange">&#x26A0; Unprotected</span>'
+                elif ba_fail:
+                    prot_badge = '<span class="badge badge-red">&#x2716; Failed</span>'
+                else:
+                    prot_badge = '<span class="badge badge-green">&#x2713; Protected</span>'
+                policies_str = ", ".join(display_policies) if display_policies else "—"
             else:
-                prot_badge = '<span class="badge badge-green">&#x2713; Protected</span>'
-            policies_str = ", ".join(info["policies"]) if info["policies"] else "—"
- 
+                display_policies = info["policies"]
+                if ba_fail:
+                    prot_badge = '<span class="badge badge-red">&#x2716; Failed</span>'
+                else:
+                    prot_badge = '<span class="badge badge-green">&#x2713; Protected</span>'
+                policies_str = ", ".join(info["policies"]) if info["policies"] else "—"
+
             # Location Profile cell — one badge per (policy, profile) pair
             pp = info.get("policy_profiles", {})
+            _pol_list = display_policies if ns_name == "kasten-io" else info["policies"]
             if pp:
                 profile_badges = []
-                for pol_name in info["policies"]:
+                for pol_name in _pol_list:
                     prof_name = pp.get(pol_name, "")
                     if prof_name:
                         badge_cls = "badge-green" if prof_name in immutable_profiles else "badge-gray"
@@ -1842,18 +2026,18 @@ def render_namespaces():
                 loc_profile_cell = " ".join(profile_badges)
             else:
                 loc_profile_cell = "—"
- 
+
         else:
             prot_badge       = '<span class="badge badge-orange">&#x26A0; Unprotected</span>'
             policies_str     = "—"
             loc_profile_cell = "—"
- 
+
         # PVC stats for this namespace
         pvc_info = _ns_pvcs.get(ns_name, {"count": 0, "bytes": 0})
         pvc_count = pvc_info["count"]
         pvc_storage = _fmt_storage(pvc_info["bytes"]) if pvc_info["bytes"] > 0 else "—"
         pvc_cell = f"{pvc_count} &nbsp;<span style='color:var(--text-muted);font-size:11px'>({pvc_storage})</span>" if pvc_count > 0 else "0"
- 
+
         # Last backup status from failed BackupActions
         if ba_fail and info["protected"]:
             backup_cell = (
@@ -1867,7 +2051,31 @@ def render_namespaces():
             backup_cell = '<span class="badge badge-green">&#x2713; OK</span>'
         else:
             backup_cell = "—"
- 
+
+        # Last restore status from RestoreActions
+        rsa = ns_last_restore.get(ns_name)
+        if rsa:
+            rsa_state = rsa["state"]
+            if rsa_state in ("Failed", "Error"):
+                restore_cell = (
+                    '<span class="badge badge-red">&#x2716; Failed</span>'
+                    + (f'<div class="bp-detail" style="color:var(--red)">&#x26A0; {h(rsa["error"])}</div>'
+                       if rsa["error"] else "")
+                    + f'<div class="bp-detail" style="color:var(--text-muted)">{h(rsa["age"])} ago</div>'
+                )
+            elif rsa_state in ("Complete", "Succeeded", "Success"):
+                restore_cell = (
+                    '<span class="badge badge-green">&#x2713; OK</span>'
+                    f'<div class="bp-detail" style="color:var(--text-muted)">{h(rsa["age"])} ago</div>'
+                )
+            else:
+                restore_cell = (
+                    h(rsa_state)
+                    + f'<div class="bp-detail" style="color:var(--text-muted)">{h(rsa["age"])} ago</div>'
+                )
+        else:
+            restore_cell = "—"
+
         rows += table_row(
             h(ns_name),
             prot_badge,
@@ -1875,12 +2083,13 @@ def render_namespaces():
             loc_profile_cell,
             pvc_cell,
             backup_cell,
+            restore_cell,
         )
- 
+
     # Counts for alert blocks
     failed_ns_count_local = sum(1 for ns in ns_protection if ns_protection[ns]["protected"] and ns in failed_ns_set)
     unprotected_count     = sum(1 for ns, info in ns_protection.items() if not info["protected"])
- 
+
     failed_ns_alert = (
         f'<div class="alert alert-danger"><strong>&#x2716; {failed_ns_count_local} namespace(s) have a failed backup.</strong>'
         f' Check the policy and BackupAction logs for: '
@@ -1890,7 +2099,7 @@ def render_namespaces():
             if ns_protection[ns]["protected"] and ns in failed_ns_set
         ) + "</div>"
     ) if failed_ns_count_local > 0 else ""
- 
+
     unprotected_alert = (
         f'<div class="alert alert-warn"><strong>&#x26A0; {unprotected_count} namespace(s) have no backup policy.</strong>'
         ' Review and assign policies as needed.</div>'
@@ -1898,7 +2107,7 @@ def render_namespaces():
         ('' if failed_ns_count_local > 0 else
          '<div class="alert alert-success">All namespaces are covered by at least one backup policy.</div>')
     )
- 
+
     sub_count_parts = []
     if protected_ns > 0:
         sub_count_parts.append(f'<span style="color:var(--green)">{protected_ns} protected</span>')
@@ -1907,7 +2116,7 @@ def render_namespaces():
     if unprotected_count > 0:
         sub_count_parts.append(f'<span style="color:var(--orange)">{unprotected_count} unprotected</span>')
     sub_count_html = " &nbsp;·&nbsp; ".join(sub_count_parts)
- 
+
     return f"""
   <div id="kasten-namespaces">
   <h3>Namespaces <span class="count">{ns_count}</span> <span class="sub-count">{sub_count_html}</span></h3>
@@ -1915,7 +2124,7 @@ def render_namespaces():
   {unprotected_alert}
   <div class="table-wrap">
     <table class="data-table">
-      {th_row("Namespace","Protection","Backup Policy","Location Profile","PVCs (Storage)","Last Backup")}
+      {th_row("Namespace","Protection","Backup Policy","Location Profile","PVCs (Storage)","Last Backup","Last Restore")}
       <tbody>{rows}</tbody>
     </table>
   </div>
@@ -1954,38 +2163,97 @@ def render_kasten():
             h(p["age"]),
         )
  
-    # ── All Policies table ───────────────────────────────────────────────────
-    pol_rows = ""
-    for pol in kasten["policies"]:
-        actions_str = " + ".join(pol["actions"])
-        ns_str      = ", ".join(pol["namespaces"]) if pol["namespaces"] else "<em>via labels</em>"
-        run_state   = pol.get("last_run_state", "—")
-        run_badge   = status_badge(run_state) if run_state not in ("—", "Unknown") else h(run_state)
-        # Enrich with most recent failed BackupAction if available
-        ba_fail = failed_backup_actions["by_policy"].get(pol["name"])
-        if ba_fail:
-            run_badge = (
-                '<span class="badge badge-red">&#x2716; Failed</span>'
-                f'<div class="bp-detail" style="color:var(--red)">'
-                f'&#x26A0; {h(ba_fail["display_msg"])}</div>'
-                f'<div class="bp-detail" style="color:var(--text-muted)">'
-                f'{h(ba_fail["age"])} ago</div>'
+    # ── Policy exclusions ────────────────────────────────────────────────────
+    EXCLUDED_POLICIES = {"k10-disaster-recovery-policy", "k10-system-reports-policy"}
+
+    def _pol_rows(pol_list):
+        rows = ""
+        for pol in pol_list:
+            actions_str = " + ".join(pol["actions"])
+            ns_str      = ", ".join(pol["namespaces"]) if pol["namespaces"] else "<em>via labels</em>"
+            run_state   = pol.get("last_run_state", "—")
+            run_badge   = status_badge(run_state) if run_state not in ("—", "Unknown") else h(run_state)
+            ba_fail = failed_backup_actions["by_policy"].get(pol["name"])
+            if ba_fail:
+                run_badge = (
+                    '<span class="badge badge-red">&#x2716; Failed</span>'
+                    f'<div class="bp-detail" style="color:var(--red)">'
+                    f'&#x26A0; {h(ba_fail["display_msg"])}</div>'
+                    f'<div class="bp-detail" style="color:var(--text-muted)">'
+                    f'{h(ba_fail["age"])} ago</div>'
+                )
+            rows += table_row(
+                h(pol["name"]),
+                h(actions_str),
+                h(ns_str),
+                h(pol["frequency"] or "—"),
+                h(pol["retention"] or "—"),
+                run_badge,
             )
-        pol_rows += table_row(
-            h(pol["name"]),
-            h(actions_str),
-            h(ns_str),
-            h(pol["frequency"] or "—"),
-            h(pol["retention"] or "—"),
-            run_badge,
+        return rows
+
+    def _pol_table(pol_list, empty_msg):
+        if not pol_list:
+            return f'<div class="alert alert-info">{empty_msg}</div>'
+        return (
+            '<div class="table-wrap"><table class="data-table">'
+            + th_row("Name","Actions","Targeted Namespaces","Frequency","Retention","Status")
+            + f'<tbody>{_pol_rows(pol_list)}</tbody></table></div>'
         )
- 
-    pol_section = (
-        '<p class="empty">No backup policy configured.</p>' if not kasten["policies"] else
-        '<div class="table-wrap"><table class="data-table">'
-        + th_row("Name","Actions","Targeted Namespaces","Frequency","Retention","Status")
-        + f'<tbody>{pol_rows}</tbody></table></div>'
-    )
+
+    def _import_pol_rows(pol_list):
+        rows = ""
+        for pol in pol_list:
+            actions_str = " + ".join(pol["actions"])
+            rows += table_row(
+                h(pol["name"]),
+                h(actions_str),
+                h(pol["frequency"] or "—"),
+            )
+        return rows
+
+    def _import_pol_table(pol_list, empty_msg):
+        if not pol_list:
+            return f'<div class="alert alert-info">{empty_msg}</div>'
+        return (
+            '<div class="table-wrap"><table class="data-table">'
+            + th_row("Name","Actions","Frequency")
+            + f'<tbody>{_import_pol_rows(pol_list)}</tbody></table></div>'
+        )
+
+    def _restore_actions_section(ra_list):
+        if not ra_list:
+            return '<div class="alert alert-info">No RestoreAction found in the cluster.</div>'
+        rows = ""
+        for ra in ra_list[:20]:
+            state = ra["state"]
+            if state in ("Failed", "Error"):
+                state_cell = (
+                    '<span class="badge badge-red">&#x2716; ' + h(state) + '</span>'
+                    + (f'<div class="bp-detail" style="color:var(--red)">&#x26A0; {h(ra["error"])}</div>'
+                       if ra["error"] else "")
+                )
+            elif state in ("Complete", "Succeeded", "Success"):
+                state_cell = '<span class="badge badge-green">&#x2713; ' + h(state) + '</span>'
+            elif state in ("Running", "InProgress"):
+                state_cell = '<span class="badge badge-blue">&#x23F3; ' + h(state) + '</span>'
+            else:
+                state_cell = h(state)
+            rows += table_row(h(ra["name"]), h(ra["namespace"]), state_cell, h(ra["age"]))
+        return (
+            '<div class="table-wrap"><table class="data-table">'
+            + th_row("Name","Target Namespace","Status","Age")
+            + f'<tbody>{rows}</tbody></table></div>'
+        )
+
+    backup_pols = [p for p in kasten["policies"]
+                   if p["name"] not in EXCLUDED_POLICIES
+                   and any(a in ("backup", "export") for a in p["actions"])]
+    import_pols = [p for p in kasten["policies"]
+                   if p["name"] not in EXCLUDED_POLICIES
+                   and any(a in ("import", "restore") for a in p["actions"])]
+
+    pol_section = ""  # kept for compat – not used below
  
     # Profiles table — Immutable column shows "Yes" (not "WORM")
     prof_rows = ""
@@ -2078,12 +2346,74 @@ def render_kasten():
  
     helm_content = f'<pre class="code-block">{h(kasten["helm_values"])}</pre>'
  
+    # ── Blueprints / BlueprintBindings / TransformSets tables ───────────────
+    bp_rows = ""
+    for bp in kasten["blueprints"]:
+        bp_rows += table_row(h(bp["name"]), h(bp["namespace"]),
+                             h(", ".join(bp["actions"]) or "—"), h(bp["age"]))
+    bb_rows = ""
+    for bb in kasten["blueprint_bindings"]:
+        bb_rows += table_row(h(bb["name"]), h(bb["namespace"]),
+                             h(bb["blueprint"]), h(bb["subject"]), h(bb["age"]))
+    ts_rows = ""
+    for ts in kasten["transform_sets"]:
+        ts_rows += table_row(h(ts["name"]), h(ts["namespace"]),
+                             str(ts["transforms"]), h(ts["age"]))
+
+    bp_section = (
+        '<div class="alert alert-info">No Blueprint found in the cluster.</div>'
+        if not kasten["blueprints"] else
+        '<div class="table-wrap"><table class="data-table">'
+        + th_row("Name","Namespace","Actions","Age")
+        + f'<tbody>{bp_rows}</tbody></table></div>'
+    )
+    bb_section = (
+        '<div class="alert alert-info">No BlueprintBinding found in the cluster.</div>'
+        if not kasten["blueprint_bindings"] else
+        '<div class="table-wrap"><table class="data-table">'
+        + th_row("Name","Namespace","Blueprint","Subject","Age")
+        + f'<tbody>{bb_rows}</tbody></table></div>'
+    )
+    ts_section = (
+        '<div class="alert alert-info">No TransformSet found in the cluster.</div>'
+        if not kasten["transform_sets"] else
+        '<div class="table-wrap"><table class="data-table">'
+        + th_row("Name","Namespace","Transforms","Age")
+        + f'<tbody>{ts_rows}</tbody></table></div>'
+    )
+
+    # ── Reports section ──────────────────────────────────────────────────────
+    rp = kasten.get("report_policy")
+    ra_list = kasten.get("report_actions", [])
+    if rp:
+        rp_freq = h(rp.get("frequency") or "—")
+        rp_age  = h(rp.get("age", "—"))
+        report_content = f'''
+    <div class="alert alert-success">
+      <strong>&#x1F4CA; k10-system-reports-policy</strong> is configured
+      &nbsp;·&nbsp; Frequency: {rp_freq} &nbsp;·&nbsp; Age: {rp_age}
+    </div>'''
+    else:
+        report_content = '<div class="alert alert-info">&#x1F4CA; <strong>k10-system-reports-policy</strong> is not configured on this cluster.</div>'
+
+    if ra_list:
+        ra_rows = "".join(
+            table_row(h(r["name"]), status_badge(r["state"]), h(r["age"]))
+            for r in ra_list[:10]
+        )
+        report_content += (
+            '<h4 style="font-size:13px;font-weight:600;margin:12px 0 6px">Recent Report Actions</h4>'
+            '<div class="table-wrap"><table class="data-table">'
+            + th_row("Name","State","Age")
+            + f'<tbody>{ra_rows}</tbody></table></div>'
+        )
+
     return f"""
 <section id="kasten">
   <details class="section-toggle">
     <summary class="section-summary"><h2>&#x1F6E1; Veeam Kasten</h2></summary>
     <div class="section-body">
- 
+
     <div class="kasten-header">
       <div class="kasten-stat">
         <span class="kstat-label">Version</span>
@@ -2106,7 +2436,7 @@ def render_kasten():
         <span class="kstat-value">{len(kasten['profiles'])}</span>
       </div>
     </div>
- 
+
     <h3>Pods</h3>
     <div class="table-wrap">
       <table class="data-table">
@@ -2114,20 +2444,37 @@ def render_kasten():
         <tbody>{pod_rows}</tbody>
       </table>
     </div>
- 
-    <h3>Backup Policies <span class="count">{len(kasten['policies'])}</span></h3>
-    {pol_section}
- 
-    <h3>Location Profiles <span class="count">{len(kasten['profiles'])}</span></h3>
+
+    <h3 id="kasten-backup-policies">Backup &amp; Export Policies <span class="count">{len(backup_pols)}</span></h3>
+    {_pol_table(backup_pols, "No backup or export policy configured.")}
+
+    <h3 id="kasten-import-policies">Import &amp; Restore Policies <span class="count">{len(import_pols)}</span></h3>
+    {_import_pol_table(import_pols, "No import or restore policy configured.")}
+
+    <h3 id="kasten-restore-actions">Restore Actions <span class="count">{len(kasten.get("restore_actions", []))}</span></h3>
+    {_restore_actions_section(kasten.get("restore_actions", []))}
+
+    <h3 id="kasten-profiles">Profiles <span class="count">{len(kasten['profiles'])}</span></h3>
     {prof_section}
- 
+
     {render_namespaces()}
- 
-    <h3>Disaster Recovery</h3>
+
+    <h3 id="kasten-dr">Disaster Recovery</h3>
     {dr_content}
- 
+
+    <h3 id="kasten-reports">Reports</h3>
+    {report_content}
+
+    <h3 id="kasten-blueprints">Kanister Resources</h3>
+    <h4 style="font-size:13px;font-weight:600;color:var(--text);margin:16px 0 6px">Blueprints</h4>
+    {bp_section}
+    <h4 style="font-size:13px;font-weight:600;color:var(--text);margin:16px 0 6px">BlueprintBindings</h4>
+    {bb_section}
+    <h4 style="font-size:13px;font-weight:600;color:var(--text);margin:16px 0 6px">TransformSets</h4>
+    {ts_section}
+
     {render_best_practices()}
- 
+
     <h3>Helm Values (Veeam Kasten)</h3>
     <details>
       <summary>Show Helm values</summary>
@@ -2619,6 +2966,15 @@ h3 { font-size: 15px; font-weight: 600; color: var(--text); margin: 24px 0 10px;
 .card-title { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-muted); }
 .card-value { font-size: 22px; font-weight: 700; color: var(--text); }
 .card-sub   { font-size: 12px; color: var(--text-muted); }
+
+/* Clickable overview cards */
+a.card-link { text-decoration: none; color: inherit; display: block; }
+.card.clickable { cursor: pointer; transition: transform .15s, box-shadow .15s; }
+.card.clickable:hover { transform: translateY(-3px);
+  box-shadow: 0 6px 14px rgba(0,0,0,.10); border-color: var(--primary); }
+
+/* Sidebar sub-links */
+.nav-sub a { padding-left: 34px !important; font-size: 12px !important; opacity: .85; }
  
 /* Tables */
 .table-wrap { overflow-x: auto; border-radius: 6px; border: 1px solid var(--border);
@@ -2744,11 +3100,28 @@ nav_items = [
     ("#network",    "🌐", "Network"),
     ("#events",         "⚠️",  f"Events ({len(events)})"),
 ]
- 
-nav_html = "\n".join(
-    f'<li><a href="{href}"><span class="nav-icon">{icon}</span>{h(label)}</a></li>'
-    for href, icon, label in nav_items
-)
+
+kasten_sub = [
+    ("#kasten-backup-policies",  "📋", "↳ Backup Policies"),
+    ("#kasten-import-policies",  "📥", "↳ Import Policies"),
+    ("#kasten-restore-actions",  "♻️",  "↳ Restore Actions"),
+    ("#kasten-profiles",         "🗄",  "↳ Profiles"),
+    ("#kasten-dr",               "🔄", "↳ Disaster Recovery"),
+    ("#kasten-reports",          "📊", "↳ Reports"),
+    ("#kasten-blueprints",       "🧩", "↳ Blueprints"),
+]
+
+nav_html_parts = []
+for href, icon, label in nav_items:
+    nav_html_parts.append(
+        f'<li><a href="{href}"><span class="nav-icon">{icon}</span>{h(label)}</a></li>'
+    )
+    if href == "#kasten":
+        for shref, sicon, slabel in kasten_sub:
+            nav_html_parts.append(
+                f'<li class="nav-sub"><a href="{shref}"><span class="nav-icon">{sicon}</span>{h(slabel)}</a></li>'
+            )
+nav_html = "\n".join(nav_html_parts)
  
 html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -2761,7 +3134,6 @@ html = f"""<!DOCTYPE html>
 <body>
  
 <header id="site-header">
-  <div class="logo-mark">K10</div>
   <div class="site-title">Veeam Kasten — Cluster Inventory</div>
   <div class="header-meta">
     <strong>{h(CONTEXT)}</strong> &nbsp;|&nbsp;
@@ -2794,7 +3166,7 @@ html = f"""<!DOCTYPE html>
  
   <footer style="margin-top:40px;padding-top:16px;border-top:1px solid var(--border);
                  color:var(--text-muted);font-size:12px;text-align:center;">
-    Generated by <strong>veeam-kasten-collector.sh</strong> v1.1.0 &nbsp;·&nbsp;
+    Generated by <strong>veeam-kasten-collector.sh</strong> v1.2.0 &nbsp;·&nbsp;
     {h(TIMESTAMP)} &nbsp;·&nbsp; Cluster: <strong>{h(CONTEXT)}</strong>
   </footer>
 </main>

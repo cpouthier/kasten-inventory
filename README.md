@@ -1,6 +1,6 @@
 # Veeam Kasten Inventory Collector
 
-**`veeam-kasten-inventory.sh` v1.1.0** — A self-contained Bash script that collects Kubernetes cluster and Veeam Kasten information and generates a single, portable HTML report.
+**`veeam-kasten-inventory.sh` v1.2.0** — A self-contained Bash script that collects Kubernetes cluster and Veeam Kasten information and generates a single, portable HTML report.
 
 The report can be shared, opened offline in any browser, and requires no external dependencies at viewing time.
 
@@ -17,9 +17,10 @@ The report can be shared, opened offline in any browser, and requires no externa
 | **Storage** | StorageClasses, PersistentVolumes, PersistentVolumeClaims, CSI Drivers, VolumeSnapshotClasses |
 | **CRDs** | All CustomResourceDefinitions with group, scope, kind, and established status |
 | **Operators (OLM)** | ClusterServiceVersions if OLM is installed |
-| **Network Policies** | All namespaces |
-| **Events** | All namespaces |
-| **Veeam Kasten** | Pods, ConfigMaps, Policies, Location Profiles, Policy Presets, Restore Points, BackupActions, RunActions, PolicyRunActions, Helm values (optional) |
+| **Network / CNI** | Detected CNI type (Cilium, Calico, Flannel, Weave, Canal, Antrea, Multus, OVN…), CNI pod status, NetworkPolicies across all namespaces |
+| **Events** | All namespaces, with Warning event count surfaced in the overview |
+| **Veeam Kasten** | Pods, ConfigMaps, Backup & Export Policies, Import & Restore Policies, Location Profiles, Policy Presets, Restore Points, BackupActions, RunActions, PolicyRunActions, RestoreActions, ReportActions, Kanister Blueprints, BlueprintBindings, TransformSets, Helm values (optional) |
+| **Namespace Protection** | Per-namespace protection status: covering policy, export profile, last successful backup date, and failed-backup indicator |
 
 > If the `kasten-io` namespace is not found, the report is still generated — the Kasten section is simply empty.
 
@@ -155,13 +156,16 @@ rules:
     resources: ["networkpolicies"]
     verbs: ["get", "list"]
   - apiGroups: ["config.kio.kasten.io"]
-    resources: ["policies", "profiles", "policypresets"]
+    resources: ["policies", "profiles", "policypresets", "blueprintbindings", "transformsets"]
     verbs: ["get", "list"]
   - apiGroups: ["actions.kio.kasten.io"]
-    resources: ["policyrunactions", "runactions", "backupactions"]
+    resources: ["policyrunactions", "runactions", "backupactions", "restoreactions", "reportactions"]
     verbs: ["get", "list"]
   - apiGroups: ["apps.kio.kasten.io"]
     resources: ["restorepoints"]
+    verbs: ["get", "list"]
+  - apiGroups: ["cr.kanister.io"]
+    resources: ["blueprints"]
     verbs: ["get", "list"]
 ```
 
