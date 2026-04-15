@@ -1,6 +1,6 @@
 # Veeam Kasten Inventory Collector
 
-**`veeam-kasten-inventory.sh` v1.2.0** — A self-contained Bash script that collects Kubernetes cluster and Veeam Kasten information and generates a single, portable HTML report.
+**`veeam-kasten-inventory.sh` v1.3.0** — A self-contained Bash script that collects Kubernetes cluster and Veeam Kasten information and generates a single, portable HTML report.
 
 The report can be shared, opened offline in any browser, and requires no external dependencies at viewing time.
 
@@ -19,10 +19,11 @@ The report can be shared, opened offline in any browser, and requires no externa
 | **Operators (OLM)** | ClusterServiceVersions if OLM is installed |
 | **Network / CNI** | Detected CNI type (Cilium, Calico, Flannel, Weave, Canal, Antrea, Multus, OVN…), CNI pod status, NetworkPolicies across all namespaces |
 | **Events** | All namespaces, with Warning event count surfaced in the overview |
-| **Veeam Kasten** | Pods, ConfigMaps, Backup & Export Policies, Import & Restore Policies, Location Profiles, Policy Presets, Restore Points, BackupActions, RunActions, PolicyRunActions, RestoreActions, ReportActions, Kanister Blueprints, BlueprintBindings, TransformSets, Helm values (optional) |
-| **Namespace Protection** | Per-namespace protection status: covering policy, export profile, last successful backup date, and failed-backup indicator |
+| **Veeam Kasten** | Pods, ConfigMaps, Backup & Export Policies, Import & Restore Policies, Location Profiles (with immutable/WORM status), Policy Presets, Restore Points, BackupActions, RunActions, PolicyRunActions, RestoreActions, ReportActions, Kanister Blueprints, BlueprintBindings, TransformSets, Helm values (optional), Disaster Recovery status (with export profile immutability warning) |
+| **Namespace Protection** | Per-namespace protection status: covering policy, export profile (green badge if immutable/WORM, gray otherwise), last successful backup date, last restore date, PVC count/size, and failed-backup indicator |
+| **Best Practices** | 11 automated checks: unprotected namespaces, policies without export, non-immutable export targets, no immutable profile, DR not configured / DR profile not immutable, label-only selectors, snapshot retention too high or zero, export without explicit retention, no PolicyPresets, NFS/SMB profiles, basic authentication active, no cluster-scoped resource policy |
 
-> If the `kasten-io` namespace is not found, the report is still generated — the Kasten section is simply empty.
+> If the `kasten-io` namespace is absent, the script also checks for Kasten CRDs. If neither namespace nor CRDs are found, the report is still generated — the Kasten section shows "not installed".
 
 ---
 
