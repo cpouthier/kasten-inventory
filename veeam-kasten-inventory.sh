@@ -2334,38 +2334,73 @@ def render_kasten():
     # ── Policy exclusions ────────────────────────────────────────────────────
     EXCLUDED_POLICIES = {"k10-disaster-recovery-policy", "k10-system-reports-policy"}
 
+    def _run_cell(pol):
+        """Build the Last Run cell from policy run metadata + BackupAction failure data."""
+        run_state = pol.get("last_run_state", "—")
+        run_time  = pol.get("last_run_time",  "—")
+        run_error = pol.get("last_run_error",  "")
+        ba_fail   = failed_backup_actions["by_policy"].get(pol["name"])
+
+        if ba_fail:
+            ts_raw = ba_fail.get("timestamp", "")
+            ts_fmt = fmt_date(ts_raw) if ts_raw else "—"
+            return (
+                '<span class="badge badge-red">&#x2716; Failed</span>'
+                f'<div class="bp-detail" style="color:var(--text-muted)">{h(ts_fmt)}</div>'
+                f'<div class="bp-detail" style="color:var(--red)">&#x26A0; {h(ba_fail["display_msg"])}</div>'
+            )
+
+        s = run_state.lower()
+        if s in ("complete", "succeeded", "success"):
+            badge = '<span class="badge badge-green">&#x2713; Complete</span>'
+        elif s in ("failed", "error"):
+            badge = '<span class="badge badge-red">&#x2716; Failed</span>'
+        elif s in ("skipped",):
+            badge = '<span class="badge badge-yellow">&#x23E9; Skipped</span>'
+        elif s in ("cancelled", "canceled"):
+            badge = '<span class="badge badge-gray">&#x2715; Cancelled</span>'
+        elif s in ("running", "inprogress"):
+            badge = '<span class="badge badge-blue">&#x23F3; Running</span>'
+        elif run_state == "—":
+            return "—"
+        else:
+            badge = f'<span class="badge badge-gray">{h(run_state)}</span>'
+
+        cell = badge
+        if run_time and run_time != "—":
+            cell += f'<div class="bp-detail" style="color:var(--text-muted)">{h(run_time)}</div>'
+        if run_error and s in ("failed", "error"):
+            snippet = run_error[:120] + ("…" if len(run_error) > 120 else "")
+            cell += f'<div class="bp-detail" style="color:var(--red)">&#x26A0; {h(snippet)}</div>'
+        return cell
+
+    def _ns_cell(pol):
+        """Namespace cell — raw HTML so <em> renders correctly."""
+        return (
+            ", ".join(h(ns) for ns in pol["namespaces"])
+            if pol["namespaces"]
+            else "<em>via labels</em>"
+        )
+
     def _pol_rows(pol_list):
         rows = ""
         for pol in pol_list:
             actions_str = " + ".join(pol["actions"])
-            ns_str      = ", ".join(pol["namespaces"]) if pol["namespaces"] else "<em>via labels</em>"
             sel_labels  = pol.get("selector_labels", [])
-            if sel_labels:
-                labels_cell = " ".join(
+            labels_cell = (
+                " ".join(
                     f'<span class="badge badge-gray" style="font-size:10px">{h(lbl)}</span>'
                     for lbl in sel_labels
-                )
-            else:
-                labels_cell = "—"
-            run_state   = pol.get("last_run_state", "—")
-            run_badge   = status_badge(run_state) if run_state not in ("—", "Unknown") else h(run_state)
-            ba_fail = failed_backup_actions["by_policy"].get(pol["name"])
-            if ba_fail:
-                run_badge = (
-                    '<span class="badge badge-red">&#x2716; Failed</span>'
-                    f'<div class="bp-detail" style="color:var(--red)">'
-                    f'&#x26A0; {h(ba_fail["display_msg"])}</div>'
-                    f'<div class="bp-detail" style="color:var(--text-muted)">'
-                    f'{h(ba_fail["age"])} ago</div>'
-                )
+                ) if sel_labels else "—"
+            )
             rows += table_row(
                 h(pol["name"]),
                 h(actions_str),
-                h(ns_str),
+                _ns_cell(pol),
                 labels_cell,
                 h(pol["frequency"] or "—"),
                 h(pol["retention"] or "—"),
-                run_badge,
+                _run_cell(pol),
             )
         return rows
 
@@ -2382,7 +2417,13 @@ def render_kasten():
         rows = ""
         for pol in pol_list:
             actions_str = " + ".join(pol["actions"])
-            rows += table_row(h(pol["name"]), h(actions_str), h(pol["frequency"] or "—"))
+            rows += table_row(
+                h(pol["name"]),
+                h(actions_str),
+                _ns_cell(pol),
+                h(pol["frequency"] or "—"),
+                _run_cell(pol),
+            )
         return rows
 
     def _import_pol_table(pol_list, empty_msg):
@@ -2390,7 +2431,7 @@ def render_kasten():
             return f'<div class="alert alert-info">{empty_msg}</div>'
         return (
             '<div class="table-wrap"><table class="data-table">'
-            + th_row("Name","Actions","Frequency")
+            + th_row("Name","Actions","Targeted Namespaces","Frequency","Last Run")
             + f'<tbody>{_import_pol_rows(pol_list)}</tbody></table></div>'
         )
 
@@ -3465,7 +3506,7 @@ main() {
   check_prerequisites
  
   echo -e "\n${BOLD}${BLUE}╔══════════════════════════════════════════╗${NC}"
-  echo -e "${BOLD}${BLUE}║  Veeam Kasten — Cluster Inventory v${SCRIPT_VERSION}║${NC}"
+  echo -e "${BOLD}${BLUE}║  Veeam Kasten — Cluster Inventory v${SCRIPT_VERSION} ║${NC}"
   echo -e "${BOLD}${BLUE}╚══════════════════════════════════════════╝${NC}\n"
  
   # Check cluster connectivity
