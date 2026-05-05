@@ -3465,7 +3465,7 @@ main() {
   check_prerequisites
  
   echo -e "\n${BOLD}${BLUE}╔══════════════════════════════════════════╗${NC}"
-  echo -e "${BOLD}${BLUE}║  Veeam Kasten — Cluster Inventory v${SCRIPT_VERSION}  ║${NC}"
+  echo -e "${BOLD}${BLUE}║  Veeam Kasten — Cluster Inventory v${SCRIPT_VERSION}║${NC}"
   echo -e "${BOLD}${BLUE}╚══════════════════════════════════════════╝${NC}\n"
  
   # Check cluster connectivity
