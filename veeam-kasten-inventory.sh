@@ -1201,6 +1201,9 @@ def process_kasten():
         })
     restore_actions.sort(key=lambda x: x["ts"], reverse=True)
 
+    # Lookup: policy name → selector_labels (built once, reused for action enrichment)
+    _pol_labels_map = {p["name"]: p.get("selector_labels", []) for p in policies}
+
     # ── ExportActions ──────────────────────────────────────────────────────────────────────
     export_actions = []
     for ea in items(load("kasten_exportactions.json", {"items": []})):
@@ -1208,18 +1211,20 @@ def process_kasten():
         st_ea     = ea.get("status", {})
         labels_ea = meta_ea.get("labels", {})
         ns_ea     = labels_ea.get("k10.kasten.io/appNamespace") or meta_ea.get("namespace", "")
+        pol_name_ea = labels_ea.get("k10.kasten.io/policyName", "")
         err_obj   = st_ea.get("error") or {}
         err_msg   = err_obj.get("message", "") if isinstance(err_obj, dict) else ""
         ts_ea     = meta_ea.get("creationTimestamp", "")
         export_actions.append({
-            "name":      meta_ea.get("name", ""),
-            "namespace": ns_ea,
-            "policy":    labels_ea.get("k10.kasten.io/policyName", ""),
-            "state":     st_ea.get("state", "Unknown"),
-            "error":     err_msg,
-            "age":       calc_age(ts_ea),
-            "date":      fmt_date(ts_ea),
-            "ts":        ts_ea,
+            "name":       meta_ea.get("name", ""),
+            "namespace":  ns_ea,
+            "policy":     pol_name_ea,
+            "pol_labels": _pol_labels_map.get(pol_name_ea, []),
+            "state":      st_ea.get("state", "Unknown"),
+            "error":      err_msg,
+            "age":        calc_age(ts_ea),
+            "date":       fmt_date(ts_ea),
+            "ts":         ts_ea,
         })
     export_actions.sort(key=lambda x: x["ts"], reverse=True)
 
@@ -1230,18 +1235,20 @@ def process_kasten():
         st_ba     = ba.get("status", {})
         labels_ba = meta_ba.get("labels", {})
         ns_ba     = labels_ba.get("k10.kasten.io/appNamespace") or meta_ba.get("namespace", "")
+        pol_name_ba = labels_ba.get("k10.kasten.io/policyName", "")
         err_obj   = st_ba.get("error") or {}
         err_msg   = err_obj.get("message", "") if isinstance(err_obj, dict) else ""
         ts_ba     = meta_ba.get("creationTimestamp", "")
         backup_actions.append({
-            "name":      meta_ba.get("name", ""),
-            "namespace": ns_ba,
-            "policy":    labels_ba.get("k10.kasten.io/policyName", ""),
-            "state":     st_ba.get("state", "Unknown"),
-            "error":     err_msg,
-            "age":       calc_age(ts_ba),
-            "date":      fmt_date(ts_ba),
-            "ts":        ts_ba,
+            "name":       meta_ba.get("name", ""),
+            "namespace":  ns_ba,
+            "policy":     pol_name_ba,
+            "pol_labels": _pol_labels_map.get(pol_name_ba, []),
+            "state":      st_ba.get("state", "Unknown"),
+            "error":      err_msg,
+            "age":        calc_age(ts_ba),
+            "date":       fmt_date(ts_ba),
+            "ts":         ts_ba,
         })
     backup_actions.sort(key=lambda x: x["ts"], reverse=True)
 
@@ -2471,6 +2478,15 @@ def render_kasten():
             cells = [h(a["name"])]
             if show_policy:
                 cells.append(h(a.get("policy", "—") or "—"))
+                pol_labels = a.get("pol_labels", [])
+                if pol_labels:
+                    labels_cell = " ".join(
+                        f'<span class="badge badge-gray" style="font-size:10px">{h(lbl)}</span>'
+                        for lbl in pol_labels
+                    )
+                else:
+                    labels_cell = "—"
+                cells.append(labels_cell)
             cells += [
                 h(a["namespace"]),
                 _action_state_cell(a),
@@ -2479,7 +2495,7 @@ def render_kasten():
             rows += table_row(*cells)
         headers = ["Name"]
         if show_policy:
-            headers.append("Policy")
+            headers += ["Policy", "Labels"]
         headers += ["Namespace", "Status", "Last run"]
         return (
             '<div class="table-wrap"><table class="data-table">'
