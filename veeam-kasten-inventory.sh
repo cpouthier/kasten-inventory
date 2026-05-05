@@ -1187,13 +1187,15 @@ def process_kasten():
         st_rsa   = rsa.get("status", {})
         err_rsa  = st_rsa.get("error", {})
         err_msg  = err_rsa.get("message", "") if isinstance(err_rsa, dict) else ""
+        ts_rsa   = meta_rsa.get("creationTimestamp", "")
         restore_actions.append({
             "name":      meta_rsa.get("name", ""),
             "namespace": meta_rsa.get("namespace", ""),
             "state":     st_rsa.get("state", "Unknown"),
             "error":     err_msg,
-            "age":       calc_age(meta_rsa.get("creationTimestamp", "")),
-            "ts":        meta_rsa.get("creationTimestamp", ""),
+            "age":       calc_age(ts_rsa),
+            "date":      fmt_date(ts_rsa),
+            "ts":        ts_rsa,
         })
     restore_actions.sort(key=lambda x: x["ts"], reverse=True)
 
@@ -1206,15 +1208,38 @@ def process_kasten():
         ns_ea     = labels_ea.get("k10.kasten.io/appNamespace") or meta_ea.get("namespace", "")
         err_obj   = st_ea.get("error") or {}
         err_msg   = err_obj.get("message", "") if isinstance(err_obj, dict) else ""
+        ts_ea     = meta_ea.get("creationTimestamp", "")
         export_actions.append({
             "name":      meta_ea.get("name", ""),
             "namespace": ns_ea,
             "state":     st_ea.get("state", "Unknown"),
             "error":     err_msg,
-            "age":       calc_age(meta_ea.get("creationTimestamp", "")),
-            "ts":        meta_ea.get("creationTimestamp", ""),
+            "age":       calc_age(ts_ea),
+            "date":      fmt_date(ts_ea),
+            "ts":        ts_ea,
         })
     export_actions.sort(key=lambda x: x["ts"], reverse=True)
+
+    # ── BackupActions (all statuses, for per-namespace last action date) ──────────────────
+    backup_actions = []
+    for ba in items(load("kasten_backupactions.json", {"items": []})):
+        meta_ba   = ba.get("metadata", {})
+        st_ba     = ba.get("status", {})
+        labels_ba = meta_ba.get("labels", {})
+        ns_ba     = labels_ba.get("k10.kasten.io/appNamespace") or meta_ba.get("namespace", "")
+        err_obj   = st_ba.get("error") or {}
+        err_msg   = err_obj.get("message", "") if isinstance(err_obj, dict) else ""
+        ts_ba     = meta_ba.get("creationTimestamp", "")
+        backup_actions.append({
+            "name":      meta_ba.get("name", ""),
+            "namespace": ns_ba,
+            "state":     st_ba.get("state", "Unknown"),
+            "error":     err_msg,
+            "age":       calc_age(ts_ba),
+            "date":      fmt_date(ts_ba),
+            "ts":        ts_ba,
+        })
+    backup_actions.sort(key=lambda x: x["ts"], reverse=True)
 
     return {
         "installed":          installed,
@@ -1235,6 +1260,7 @@ def process_kasten():
         "report_actions":     report_actions,
         "restore_actions":    restore_actions,
         "export_actions":     export_actions,
+        "backup_actions":     backup_actions,
     }
  
 # ─── Namespace Protection ─────────────────────────────────────────────────────
@@ -2116,21 +2142,43 @@ def render_namespaces():
     # Build immutable profile set for badge colouring
     immutable_profiles = {p["name"] for p in kasten["profiles"] if p["immutable"]}
 
-    # Build per-namespace latest RestoreAction map
-    ns_last_restore = {}
-    for rsa in kasten.get("restore_actions", []):
-        ns = rsa["namespace"]
-        existing = ns_last_restore.get(ns)
-        if existing is None or rsa["ts"] > existing["ts"]:
-            ns_last_restore[ns] = rsa
+    # Build per-namespace latest action maps (most recent by ts)
+    def _build_ns_map(action_list):
+        m = {}
+        for a in action_list:
+            ns = a["namespace"]
+            if ns not in m or a["ts"] > m[ns]["ts"]:
+                m[ns] = a
+        return m
 
-    # Build per-namespace latest ExportAction map
-    ns_last_export = {}
-    for ea in kasten.get("export_actions", []):
-        ns = ea["namespace"]
-        existing = ns_last_export.get(ns)
-        if existing is None or ea["ts"] > existing["ts"]:
-            ns_last_export[ns] = ea
+    ns_last_restore = _build_ns_map(kasten.get("restore_actions", []))
+    ns_last_export  = _build_ns_map(kasten.get("export_actions",  []))
+    ns_last_backup  = _build_ns_map(kasten.get("backup_actions",  []))
+
+    def _action_cell(action, protected=True):
+        """Render a status badge + date line for a single action dict."""
+        if action is None:
+            return "—" if not protected else '<span class="badge badge-gray">—</span>'
+        state = action.get("state", "Unknown")
+        date  = action.get("date", "—")
+        err   = action.get("error", "")
+        s = state.lower()
+        if s in ("complete", "succeeded", "success"):
+            badge = '<span class="badge badge-green">&#x2713; OK</span>'
+        elif s in ("failed", "error"):
+            badge = '<span class="badge badge-red">&#x2716; Failed</span>'
+        elif s in ("skipped",):
+            badge = '<span class="badge badge-yellow">&#x23E9; Skipped</span>'
+        elif s in ("cancelled", "canceled"):
+            badge = '<span class="badge badge-gray">&#x2715; Cancelled</span>'
+        elif s in ("running", "inprogress"):
+            badge = '<span class="badge badge-blue">&#x23F3; Running</span>'
+        else:
+            badge = f'<span class="badge badge-gray">{h(state)}</span>'
+        cell = badge + f'<div class="bp-detail" style="color:var(--text-muted)">{h(date)}</div>'
+        if err and s in ("failed", "error"):
+            cell += f'<div class="bp-detail" style="color:var(--red)">&#x26A0; {h(err[:120])}{"…" if len(err) > 120 else ""}</div>'
+        return cell
 
     rows = ""
     for ns_name in sorted(ns_protection.keys()):
@@ -2190,69 +2238,10 @@ def render_namespaces():
         pvc_storage = _fmt_storage(pvc_info["bytes"]) if pvc_info["bytes"] > 0 else "—"
         pvc_cell = f"{pvc_count} &nbsp;<span style='color:var(--text-muted);font-size:11px'>({pvc_storage})</span>" if pvc_count > 0 else "0"
 
-        # Last backup status from failed BackupActions
-        if ba_fail and info["protected"]:
-            backup_cell = (
-                '<span class="badge badge-red">&#x2716; Failed</span>'
-                f'<div class="bp-detail" style="color:var(--red)">'
-                f'&#x26A0; {h(ba_fail["display_msg"])}</div>'
-                f'<div class="bp-detail" style="color:var(--text-muted)">'
-                f'Policy: {h(ba_fail["policy"])} &nbsp;·&nbsp; {h(ba_fail["age"])} ago</div>'
-            )
-        elif info["protected"]:
-            backup_cell = '<span class="badge badge-green">&#x2713; OK</span>'
-        else:
-            backup_cell = "—"
-
-        # Last restore status from RestoreActions
-        rsa = ns_last_restore.get(ns_name)
-        if rsa:
-            rsa_state = rsa["state"]
-            if rsa_state in ("Failed", "Error"):
-                restore_cell = (
-                    '<span class="badge badge-red">&#x2716; Failed</span>'
-                    + (f'<div class="bp-detail" style="color:var(--red)">&#x26A0; {h(rsa["error"])}</div>'
-                       if rsa["error"] else "")
-                    + f'<div class="bp-detail" style="color:var(--text-muted)">{h(rsa["age"])} ago</div>'
-                )
-            elif rsa_state in ("Complete", "Succeeded", "Success"):
-                restore_cell = (
-                    '<span class="badge badge-green">&#x2713; OK</span>'
-                    f'<div class="bp-detail" style="color:var(--text-muted)">{h(rsa["age"])} ago</div>'
-                )
-            else:
-                restore_cell = (
-                    h(rsa_state)
-                    + f'<div class="bp-detail" style="color:var(--text-muted)">{h(rsa["age"])} ago</div>'
-                )
-        else:
-            restore_cell = "—"
-
-        # Last export status from ExportActions
-        ea = ns_last_export.get(ns_name)
-        if ea and info["protected"]:
-            ea_state = ea["state"]
-            if ea_state in ("Failed", "Error"):
-                export_cell = (
-                    '<span class="badge badge-red">&#x2716; Failed</span>'
-                    + (f'<div class="bp-detail" style="color:var(--red)">&#x26A0; {h(ea["error"])}</div>'
-                       if ea["error"] else "")
-                    + f'<div class="bp-detail" style="color:var(--text-muted)">{h(ea["age"])} ago</div>'
-                )
-            elif ea_state in ("Complete", "Succeeded", "Success"):
-                export_cell = (
-                    '<span class="badge badge-green">&#x2713; OK</span>'
-                    f'<div class="bp-detail" style="color:var(--text-muted)">{h(ea["age"])} ago</div>'
-                )
-            else:
-                export_cell = (
-                    h(ea_state)
-                    + f'<div class="bp-detail" style="color:var(--text-muted)">{h(ea["age"])} ago</div>'
-                )
-        elif info["protected"]:
-            export_cell = '<span class="badge badge-gray">—</span>'
-        else:
-            export_cell = "—"
+        # Last backup / export / restore cells
+        backup_cell  = _action_cell(ns_last_backup.get(ns_name),  protected=info["protected"])
+        export_cell  = _action_cell(ns_last_export.get(ns_name),  protected=info["protected"])
+        restore_cell = _action_cell(ns_last_restore.get(ns_name), protected=False)
 
         rows += table_row(
             h(ns_name),
