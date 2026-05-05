@@ -248,6 +248,14 @@ collect_raw_data() {
       echo '{"items":[]}' > "$TMP_DIR/kasten_backupactions.json"
     jq empty "$TMP_DIR/kasten_backupactions.json" 2>/dev/null || \
       echo '{"items":[]}' > "$TMP_DIR/kasten_backupactions.json"
+
+    # ExportActions (all namespaces)
+    log_info "Kasten ExportActions (all namespaces)..."
+    kube_safe get exportactions.actions.kio.kasten.io --all-namespaces -o json \
+      > "$TMP_DIR/kasten_exportactions.json" 2>/dev/null || \
+      echo '{"items":[]}' > "$TMP_DIR/kasten_exportactions.json"
+    jq empty "$TMP_DIR/kasten_exportactions.json" 2>/dev/null || \
+      echo '{"items":[]}' > "$TMP_DIR/kasten_exportactions.json"
  
     # Helm release secret for values
     if [[ "$SKIP_HELM" == "false" ]]; then
@@ -317,6 +325,7 @@ collect_raw_data() {
     echo '{"items":[]}' > "$TMP_DIR/kasten_transformsets.json"
     echo '{"items":[]}' > "$TMP_DIR/kasten_reportactions.json"
     echo '{"items":[]}' > "$TMP_DIR/kasten_restoreactions.json"
+    echo '{"items":[]}' > "$TMP_DIR/kasten_exportactions.json"
   fi
  
   # Node metrics (kubectl top — optional)
@@ -924,6 +933,13 @@ def process_kasten():
                         retention = f"{day_count}d"
                 elif isinstance(ret_obj, str):
                     retention = ret_obj
+        # Fallback: spec-level frequency (e.g. report policies have no backup action)
+        if not frequency:
+            freq_obj = spec.get("frequency", "")
+            if isinstance(freq_obj, str):
+                frequency = freq_obj
+            elif isinstance(freq_obj, dict):
+                frequency = freq_obj.get("@time", str(freq_obj))
  
         # Targeted namespaces
         ns_list = []
@@ -933,6 +949,19 @@ def process_kasten():
         for expr in selector.get("matchExpressions", []):
             if isinstance(expr, dict) and expr.get("key") == "k10.kasten.io/appNamespace":
                 ns_list.extend(expr.get("values", []))
+
+        # Label-based namespace selector (shown in policies table)
+        selector_labels = []
+        for k, v in selector.get("matchLabels", {}).items():
+            if k != "namespaces":
+                selector_labels.append(f"{k}={v}")
+        for expr in selector.get("matchExpressions", []):
+            if isinstance(expr, dict):
+                key = expr.get("key", "")
+                op  = expr.get("operator", "")
+                vals = expr.get("values", [])
+                if key and op and key != "k10.kasten.io/appNamespace":
+                    selector_labels.append(f"{key} {op} [{','.join(vals)}]" if vals else f"{key} {op}")
  
         # Export location profile
         # — regular policies  : profile in exportParameters of the "export" action
@@ -981,6 +1010,7 @@ def process_kasten():
             "namespace":          meta.get("namespace", ""),
             "actions":            actions,
             "namespaces":         ns_list,
+            "selector_labels":    selector_labels,
             "export_profile":     export_profile,
             "frequency":          frequency,
             "retention":          retention,
@@ -1002,7 +1032,15 @@ def process_kasten():
         obj_store = loc.get("objectStore", {})
         cred      = loc.get("credential", {})
         immutable = obj_store.get("immutable", False) or bool(obj_store.get("protectionPeriod", ""))
- 
+
+        # Top-level profile kind and infra sub-type (spec.type / spec.infra.type)
+        spec_type  = spec.get("type", "")
+        infra      = spec.get("infra", {})
+        infra_type = infra.get("type", "") if infra else ""
+        # For infra profiles, credential lives under spec.infra.credential
+        if not cred and infra:
+            cred = infra.get("credential", {})
+
         secret_type = "Unknown"
         if obj_store.get("endpoint"):
             secret_type = "Generic S3"
@@ -1012,9 +1050,11 @@ def process_kasten():
             elif "az" in st:     secret_type = "AzStorageAccount"
             elif "google" in st: secret_type = "GcpServiceAccount"
             else:                secret_type = cred["secretType"]
- 
+
         profiles.append({
             "name":        meta.get("name", ""),
+            "spec_type":   spec_type,
+            "infra_type":  infra_type,
             "store_type":  loc_type,
             "secret_type": secret_type,
             "immutable":   immutable,
@@ -1148,6 +1188,25 @@ def process_kasten():
         })
     restore_actions.sort(key=lambda x: x["ts"], reverse=True)
 
+    # ── ExportActions ──────────────────────────────────────────────────────────────────────
+    export_actions = []
+    for ea in items(load("kasten_exportactions.json", {"items": []})):
+        meta_ea   = ea.get("metadata", {})
+        st_ea     = ea.get("status", {})
+        labels_ea = meta_ea.get("labels", {})
+        ns_ea     = labels_ea.get("k10.kasten.io/appNamespace") or meta_ea.get("namespace", "")
+        err_obj   = st_ea.get("error") or {}
+        err_msg   = err_obj.get("message", "") if isinstance(err_obj, dict) else ""
+        export_actions.append({
+            "name":      meta_ea.get("name", ""),
+            "namespace": ns_ea,
+            "state":     st_ea.get("state", "Unknown"),
+            "error":     err_msg,
+            "age":       calc_age(meta_ea.get("creationTimestamp", "")),
+            "ts":        meta_ea.get("creationTimestamp", ""),
+        })
+    export_actions.sort(key=lambda x: x["ts"], reverse=True)
+
     return {
         "installed":          installed,
         "crds_installed":     crds_installed,
@@ -1166,6 +1225,7 @@ def process_kasten():
         "report_policy":      report_policy,
         "report_actions":     report_actions,
         "restore_actions":    restore_actions,
+        "export_actions":     export_actions,
     }
  
 # ─── Namespace Protection ─────────────────────────────────────────────────────
@@ -1526,7 +1586,7 @@ def render_overview():
         <div class="card-icon">&#x1F4BE;</div>
         <div class="card-title">PVCs</div>
         <div class="card-value">{len(storage['pvcs'])}</div>
-        <div class="card-sub">Default SC: {h(sc_default)}</div>
+        <div class="card-sub">{h(total_pvc_capacity)} total &nbsp;·&nbsp; Default SC: {h(sc_default)}</div>
       </div>
       <div class="card">
         <div class="card-icon">&#x1F6E1;</div>
@@ -1962,6 +2022,10 @@ def _fmt_storage(total_bytes):
         return f"{total_bytes / 1024:.0f} Ki"
     return f"{total_bytes} B"
 
+# Global PVC totals
+total_pvc_bytes = sum(_parse_storage_bytes(pvc.get("capacity", "")) for pvc in storage.get("pvcs", []))
+total_pvc_capacity = _fmt_storage(total_pvc_bytes) if total_pvc_bytes > 0 else "—"
+
 # Build per-namespace PVC stats (count + total capacity)
 _ns_pvcs = {}
 for _pvc in storage.get("pvcs", []):
@@ -1987,6 +2051,14 @@ def render_namespaces():
         existing = ns_last_restore.get(ns)
         if existing is None or rsa["ts"] > existing["ts"]:
             ns_last_restore[ns] = rsa
+
+    # Build per-namespace latest ExportAction map
+    ns_last_export = {}
+    for ea in kasten.get("export_actions", []):
+        ns = ea["namespace"]
+        existing = ns_last_export.get(ns)
+        if existing is None or ea["ts"] > existing["ts"]:
+            ns_last_export[ns] = ea
 
     rows = ""
     for ns_name in sorted(ns_protection.keys()):
@@ -2084,6 +2156,32 @@ def render_namespaces():
         else:
             restore_cell = "—"
 
+        # Last export status from ExportActions
+        ea = ns_last_export.get(ns_name)
+        if ea and info["protected"]:
+            ea_state = ea["state"]
+            if ea_state in ("Failed", "Error"):
+                export_cell = (
+                    '<span class="badge badge-red">&#x2716; Failed</span>'
+                    + (f'<div class="bp-detail" style="color:var(--red)">&#x26A0; {h(ea["error"])}</div>'
+                       if ea["error"] else "")
+                    + f'<div class="bp-detail" style="color:var(--text-muted)">{h(ea["age"])} ago</div>'
+                )
+            elif ea_state in ("Complete", "Succeeded", "Success"):
+                export_cell = (
+                    '<span class="badge badge-green">&#x2713; OK</span>'
+                    f'<div class="bp-detail" style="color:var(--text-muted)">{h(ea["age"])} ago</div>'
+                )
+            else:
+                export_cell = (
+                    h(ea_state)
+                    + f'<div class="bp-detail" style="color:var(--text-muted)">{h(ea["age"])} ago</div>'
+                )
+        elif info["protected"]:
+            export_cell = '<span class="badge badge-gray">—</span>'
+        else:
+            export_cell = "—"
+
         rows += table_row(
             h(ns_name),
             prot_badge,
@@ -2091,6 +2189,7 @@ def render_namespaces():
             loc_profile_cell,
             pvc_cell,
             backup_cell,
+            export_cell,
             restore_cell,
         )
 
@@ -2132,7 +2231,7 @@ def render_namespaces():
   {unprotected_alert}
   <div class="table-wrap">
     <table class="data-table">
-      {th_row("Namespace","Protection","Backup Policy","Location Profile","PVCs (Storage)","Last Backup","Last Restore")}
+      {th_row("Namespace","Protection","Backup Policy","Location Profile","PVCs (Storage)","Last Backup","Last Export","Last Restore")}
       <tbody>{rows}</tbody>
     </table>
   </div>
@@ -2179,6 +2278,14 @@ def render_kasten():
         for pol in pol_list:
             actions_str = " + ".join(pol["actions"])
             ns_str      = ", ".join(pol["namespaces"]) if pol["namespaces"] else "<em>via labels</em>"
+            sel_labels  = pol.get("selector_labels", [])
+            if sel_labels:
+                labels_cell = " ".join(
+                    f'<span class="badge badge-gray" style="font-size:10px">{h(lbl)}</span>'
+                    for lbl in sel_labels
+                )
+            else:
+                labels_cell = "—"
             run_state   = pol.get("last_run_state", "—")
             run_badge   = status_badge(run_state) if run_state not in ("—", "Unknown") else h(run_state)
             ba_fail = failed_backup_actions["by_policy"].get(pol["name"])
@@ -2194,6 +2301,7 @@ def render_kasten():
                 h(pol["name"]),
                 h(actions_str),
                 h(ns_str),
+                labels_cell,
                 h(pol["frequency"] or "—"),
                 h(pol["retention"] or "—"),
                 run_badge,
@@ -2205,7 +2313,7 @@ def render_kasten():
             return f'<div class="alert alert-info">{empty_msg}</div>'
         return (
             '<div class="table-wrap"><table class="data-table">'
-            + th_row("Name","Actions","Targeted Namespaces","Frequency","Retention","Status")
+            + th_row("Name","Actions","Targeted Namespaces","Labels","Frequency","Retention","Last Run")
             + f'<tbody>{_pol_rows(pol_list)}</tbody></table></div>'
         )
 
@@ -2324,9 +2432,20 @@ def render_kasten():
     for p in kasten["profiles"]:
         immut_badge = '<span class="badge badge-green">Yes ✓</span>' if p["immutable"] \
                      else '<span class="badge badge-gray">No</span>'
+        # Type cell: spec.type (e.g. "Infra") + sub-type badge
+        spec_t = p.get("spec_type") or ""
+        infra_t = p.get("infra_type") or ""
+        store_t = p.get("store_type") or ""
+        if spec_t:
+            sub_badge = infra_t or store_t
+            type_cell = h(spec_t)
+            if sub_badge and sub_badge != "Unknown":
+                type_cell += f' <span class="badge badge-gray" style="font-size:10px">{h(sub_badge)}</span>'
+        else:
+            type_cell = h(store_t) if store_t and store_t != "Unknown" else "—"
         prof_rows += table_row(
             h(p["name"]),
-            h(p["store_type"]),
+            type_cell,
             h(p["secret_type"]),
             h(p["bucket"] or "—"),
             h(p["region"] or "—"),
@@ -2334,7 +2453,7 @@ def render_kasten():
             status_badge(p["status"]),
             h(p["age"]),
         )
- 
+
     prof_section = (
         '<p class="empty">No location profile configured.</p>' if not kasten["profiles"] else
         '<div class="table-wrap"><table class="data-table">'
