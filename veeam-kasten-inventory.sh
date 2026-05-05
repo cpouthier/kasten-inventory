@@ -1131,8 +1131,10 @@ def process_kasten():
     blueprints = []
     for bp in items(load("kasten_blueprints.json", {"items": []})):
         meta_bp = bp.get("metadata", {})
-        spec_bp = bp.get("spec", {})
-        actions_bp = list(spec_bp.get("actions", {}).keys()) if isinstance(spec_bp.get("actions"), dict) else []
+        spec_bp     = bp.get("spec", {})
+        # Kanister Blueprints store actions at the top level, not inside spec
+        _bp_actions = bp.get("actions") or spec_bp.get("actions") or {}
+        actions_bp  = sorted(_bp_actions.keys()) if isinstance(_bp_actions, dict) else []
         blueprints.append({
             "name":      meta_bp.get("name", ""),
             "namespace": meta_bp.get("namespace", "kasten-io"),
@@ -1212,6 +1214,7 @@ def process_kasten():
         export_actions.append({
             "name":      meta_ea.get("name", ""),
             "namespace": ns_ea,
+            "policy":    labels_ea.get("k10.kasten.io/policyName", ""),
             "state":     st_ea.get("state", "Unknown"),
             "error":     err_msg,
             "age":       calc_age(ts_ea),
@@ -1233,6 +1236,7 @@ def process_kasten():
         backup_actions.append({
             "name":      meta_ba.get("name", ""),
             "namespace": ns_ba,
+            "policy":    labels_ba.get("k10.kasten.io/policyName", ""),
             "state":     st_ba.get("state", "Unknown"),
             "error":     err_msg,
             "age":       calc_age(ts_ba),
@@ -2458,21 +2462,28 @@ def render_kasten():
             badge = f'<span class="badge badge-gray">{h(state)}</span>'
         return badge
 
-    def _actions_section(action_list, empty_msg, limit=20):
+    def _actions_section(action_list, empty_msg, limit=20, show_policy=False):
         """Generic renderer for Backup / Export / Restore action tables."""
         if not action_list:
             return f'<div class="alert alert-info">{empty_msg}</div>'
         rows = ""
         for a in action_list[:limit]:
-            rows += table_row(
-                h(a["name"]),
+            cells = [h(a["name"])]
+            if show_policy:
+                cells.append(h(a.get("policy", "—") or "—"))
+            cells += [
                 h(a["namespace"]),
                 _action_state_cell(a),
                 h(a.get("date", "—")),
-            )
+            ]
+            rows += table_row(*cells)
+        headers = ["Name"]
+        if show_policy:
+            headers.append("Policy")
+        headers += ["Namespace", "Status", "Last run"]
         return (
             '<div class="table-wrap"><table class="data-table">'
-            + th_row("Name","Namespace","Status","Date")
+            + th_row(*headers)
             + f'<tbody>{rows}</tbody></table></div>'
         )
 
@@ -2751,9 +2762,9 @@ def render_kasten():
 
     <h3 id="kasten-actions">Actions</h3>
     <h4 style="font-size:13px;font-weight:600;color:var(--text);margin:16px 0 6px">Backup Actions <span class="count">{len(kasten.get("backup_actions", []))}</span></h4>
-    {_actions_section(kasten.get("backup_actions", []), "No BackupAction found in the cluster.")}
+    {_actions_section(kasten.get("backup_actions", []), "No BackupAction found in the cluster.", show_policy=True)}
     <h4 style="font-size:13px;font-weight:600;color:var(--text);margin:16px 0 6px">Export Actions <span class="count">{len(kasten.get("export_actions", []))}</span></h4>
-    {_actions_section(kasten.get("export_actions", []), "No ExportAction found in the cluster.")}
+    {_actions_section(kasten.get("export_actions", []), "No ExportAction found in the cluster.", show_policy=True)}
     <h4 style="font-size:13px;font-weight:600;color:var(--text);margin:16px 0 6px">Restore Actions <span class="count">{len(kasten.get("restore_actions", []))}</span></h4>
     {_restore_actions_section(kasten.get("restore_actions", []))}
 
