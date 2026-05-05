@@ -239,7 +239,7 @@ rules:
 
 *Backup Actions and Export Actions with policy name, label selectors, namespace, status badge, and last run date. Restore Actions with namespace, status, and date.*
 
-### Veeam Kasten — Location Profiles
+### Veeam Kasten — Profiles
 
 ![Kasten Profiles](img/profiles.png)
 
