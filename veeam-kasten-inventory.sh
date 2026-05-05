@@ -2400,7 +2400,7 @@ def render_kasten():
                 labels_cell,
                 h(pol["frequency"] or "—"),
                 h(pol["retention"] or "—"),
-                _run_cell(pol),
+                h(pol.get("age", "—")),
             )
         return rows
 
@@ -2409,7 +2409,7 @@ def render_kasten():
             return f'<div class="alert alert-info">{empty_msg}</div>'
         return (
             '<div class="table-wrap"><table class="data-table">'
-            + th_row("Name","Actions","Targeted Namespaces","Labels","Frequency","Retention","Last Run")
+            + th_row("Name","Actions","Targeted Namespaces","Labels","Frequency","Retention","Age")
             + f'<tbody>{_pol_rows(pol_list)}</tbody></table></div>'
         )
 
@@ -2422,7 +2422,7 @@ def render_kasten():
                 h(actions_str),
                 _ns_cell(pol),
                 h(pol["frequency"] or "—"),
-                _run_cell(pol),
+                h(pol.get("age", "—")),
             )
         return rows
 
@@ -2431,34 +2431,53 @@ def render_kasten():
             return f'<div class="alert alert-info">{empty_msg}</div>'
         return (
             '<div class="table-wrap"><table class="data-table">'
-            + th_row("Name","Actions","Targeted Namespaces","Frequency","Last Run")
+            + th_row("Name","Actions","Targeted Namespaces","Frequency","Age")
             + f'<tbody>{_import_pol_rows(pol_list)}</tbody></table></div>'
         )
 
-    def _restore_actions_section(ra_list):
-        if not ra_list:
-            return '<div class="alert alert-info">No RestoreAction found in the cluster.</div>'
+    def _action_state_cell(action):
+        """Shared status badge renderer for action rows."""
+        state = action.get("state", "Unknown")
+        err   = action.get("error", "")
+        s = state.lower()
+        if s in ("complete", "succeeded", "success"):
+            badge = '<span class="badge badge-green">&#x2713; Complete</span>'
+        elif s in ("failed", "error"):
+            badge = (
+                '<span class="badge badge-red">&#x2716; Failed</span>'
+                + (f'<div class="bp-detail" style="color:var(--red)">&#x26A0; {h(err[:120])}{"…" if len(err) > 120 else ""}</div>'
+                   if err else "")
+            )
+        elif s in ("skipped",):
+            badge = '<span class="badge badge-yellow">&#x23E9; Skipped</span>'
+        elif s in ("cancelled", "canceled"):
+            badge = '<span class="badge badge-gray">&#x2715; Cancelled</span>'
+        elif s in ("running", "inprogress"):
+            badge = '<span class="badge badge-blue">&#x23F3; Running</span>'
+        else:
+            badge = f'<span class="badge badge-gray">{h(state)}</span>'
+        return badge
+
+    def _actions_section(action_list, empty_msg, limit=20):
+        """Generic renderer for Backup / Export / Restore action tables."""
+        if not action_list:
+            return f'<div class="alert alert-info">{empty_msg}</div>'
         rows = ""
-        for ra in ra_list[:20]:
-            state = ra["state"]
-            if state in ("Failed", "Error"):
-                state_cell = (
-                    '<span class="badge badge-red">&#x2716; ' + h(state) + '</span>'
-                    + (f'<div class="bp-detail" style="color:var(--red)">&#x26A0; {h(ra["error"])}</div>'
-                       if ra["error"] else "")
-                )
-            elif state in ("Complete", "Succeeded", "Success"):
-                state_cell = '<span class="badge badge-green">&#x2713; ' + h(state) + '</span>'
-            elif state in ("Running", "InProgress"):
-                state_cell = '<span class="badge badge-blue">&#x23F3; ' + h(state) + '</span>'
-            else:
-                state_cell = h(state)
-            rows += table_row(h(ra["name"]), h(ra["namespace"]), state_cell, h(ra["age"]))
+        for a in action_list[:limit]:
+            rows += table_row(
+                h(a["name"]),
+                h(a["namespace"]),
+                _action_state_cell(a),
+                h(a.get("date", "—")),
+            )
         return (
             '<div class="table-wrap"><table class="data-table">'
-            + th_row("Name","Target Namespace","Status","Age")
+            + th_row("Name","Namespace","Status","Date")
             + f'<tbody>{rows}</tbody></table></div>'
         )
+
+    def _restore_actions_section(ra_list):
+        return _actions_section(ra_list, "No RestoreAction found in the cluster.")
 
     backup_pols = [p for p in kasten["policies"]
                    if p["name"] not in EXCLUDED_POLICIES
@@ -2724,13 +2743,18 @@ def render_kasten():
       </table>
     </div>
  
-    <h3 id="kasten-backup-policies">Backup &amp; Export Policies <span class="count">{len(backup_pols)}</span></h3>
+    <h3 id="kasten-policies">Policies</h3>
+    <h4 style="font-size:13px;font-weight:600;color:var(--text);margin:16px 0 6px">Backup &amp; Export Policies <span class="count">{len(backup_pols)}</span></h4>
     {_pol_table(backup_pols, "No backup or export policy configured.")}
-
-    <h3 id="kasten-import-policies">Import &amp; Restore Policies <span class="count">{len(import_pols)}</span></h3>
+    <h4 style="font-size:13px;font-weight:600;color:var(--text);margin:16px 0 6px">Import &amp; Restore Policies <span class="count">{len(import_pols)}</span></h4>
     {_import_pol_table(import_pols, "No import or restore policy configured.")}
 
-    <h3 id="kasten-restore-actions">Restore Actions <span class="count">{len(kasten.get("restore_actions", []))}</span></h3>
+    <h3 id="kasten-actions">Actions</h3>
+    <h4 style="font-size:13px;font-weight:600;color:var(--text);margin:16px 0 6px">Backup Actions <span class="count">{len(kasten.get("backup_actions", []))}</span></h4>
+    {_actions_section(kasten.get("backup_actions", []), "No BackupAction found in the cluster.")}
+    <h4 style="font-size:13px;font-weight:600;color:var(--text);margin:16px 0 6px">Export Actions <span class="count">{len(kasten.get("export_actions", []))}</span></h4>
+    {_actions_section(kasten.get("export_actions", []), "No ExportAction found in the cluster.")}
+    <h4 style="font-size:13px;font-weight:600;color:var(--text);margin:16px 0 6px">Restore Actions <span class="count">{len(kasten.get("restore_actions", []))}</span></h4>
     {_restore_actions_section(kasten.get("restore_actions", []))}
 
     <h3 id="kasten-profiles">Profiles <span class="count">{len(kasten['profiles'])}</span></h3>
@@ -2749,10 +2773,10 @@ def render_kasten():
     {bp_section}
     <h4 style="font-size:13px;font-weight:600;color:var(--text);margin:16px 0 6px">BlueprintBindings</h4>
     {bb_section}
-    <h4 style="font-size:13px;font-weight:600;color:var(--text);margin:16px 0 6px">TransformSets</h4>
+    <h4 id="kasten-transformsets" style="font-size:13px;font-weight:600;color:var(--text);margin:16px 0 6px">TransformSets</h4>
     {ts_section}
 
-    {render_best_practices()}
+    <div id="kasten-best-practices">{render_best_practices()}</div>
 
     <h3>Helm Values (Veeam Kasten)</h3>
     <details>
@@ -3416,13 +3440,16 @@ nav_items = [
 ]
  
 kasten_sub = [
-    ("#kasten-backup-policies",  "📋", "↳ Backup Policies"),
-    ("#kasten-import-policies",  "📥", "↳ Import Policies"),
-    ("#kasten-restore-actions",  "♻️",  "↳ Restore Actions"),
-    ("#kasten-profiles",         "🗄",  "↳ Profiles"),
-    ("#kasten-dr",               "🔄", "↳ Disaster Recovery"),
-    ("#kasten-reports",          "📊", "↳ Reports"),
-    ("#kasten-blueprints",       "🧩", "↳ Blueprints"),
+    ("#kasten-license",         "🔑", "↳ Licences"),
+    ("#kasten-policies",        "📋", "↳ Policies"),
+    ("#kasten-actions",         "⚡", "↳ Actions"),
+    ("#kasten-namespaces",      "🗂",  "↳ Namespaces"),
+    ("#kasten-profiles",        "🗄",  "↳ Profiles"),
+    ("#kasten-blueprints",      "🧩", "↳ Blueprints"),
+    ("#kasten-transformsets",   "🔀", "↳ Transformsets"),
+    ("#kasten-dr",              "🔄", "↳ Disaster Recovery"),
+    ("#kasten-reports",         "📊", "↳ Reports"),
+    ("#kasten-best-practices",  "✅", "↳ Best Practices"),
 ]
 
 nav_html_parts = []
