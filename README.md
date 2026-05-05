@@ -1,6 +1,6 @@
 # Veeam Kasten Inventory Collector
 
-**`veeam-kasten-inventory.sh` v1.3.0** — A self-contained Bash script that collects Kubernetes cluster and Veeam Kasten information and generates a single, portable HTML report.
+**`veeam-kasten-inventory.sh` v1.4.0** — A self-contained Bash script that collects Kubernetes cluster and Veeam Kasten information and generates a single, portable HTML report.
 
 The report can be shared, opened offline in any browser, and requires no external dependencies at viewing time.
 
@@ -10,20 +10,45 @@ The report can be shared, opened offline in any browser, and requires no externa
 
 | Section | Details |
 |---------|---------|
-| **Cluster Overview** | Distribution (K3s, K8s, OpenShift, RKE, AKS, EKS, GKE, Harvester), server version, context, namespace count |
+| **Cluster Overview** | Distribution (K3s, K8s, OpenShift, RKE, AKS, EKS, GKE, Harvester), server version, context, namespace count, total PVC count and capacity |
 | **Nodes** | Status, roles, instance type, CPU/memory capacity and usage (if metrics-server is available), kubelet version, age, labels, taints |
 | **Pods** | All namespaces — phase, readiness, restart count, resource requests/limits, owner references |
 | **Services** | Type, ClusterIP, LoadBalancer IP, ports, selectors |
-| **Storage** | StorageClasses, PersistentVolumes, PersistentVolumeClaims, CSI Drivers, VolumeSnapshotClasses |
+| **Storage** | StorageClasses, PersistentVolumes, PersistentVolumeClaims (with per-namespace count and capacity), CSI Drivers, VolumeSnapshotClasses |
 | **CRDs** | All CustomResourceDefinitions with group, scope, kind, and established status |
 | **Operators (OLM)** | ClusterServiceVersions if OLM is installed |
 | **Network / CNI** | Detected CNI type (Cilium, Calico, Flannel, Weave, Canal, Antrea, Multus, OVN…), CNI pod status, NetworkPolicies across all namespaces |
 | **Events** | All namespaces, with Warning event count surfaced in the overview |
-| **Veeam Kasten** | Pods, ConfigMaps, Backup & Export Policies, Import & Restore Policies, Location Profiles (with immutable/WORM status), Policy Presets, Restore Points, BackupActions, RunActions, PolicyRunActions, RestoreActions, ReportActions, Kanister Blueprints, BlueprintBindings, TransformSets, Helm values (optional), Disaster Recovery status (with export profile immutability warning) |
-| **Namespace Protection** | Per-namespace protection status: covering policy, export profile (green badge if immutable/WORM, gray otherwise), last successful backup date, last restore date, PVC count/size, and failed-backup indicator |
+| **Veeam Kasten — License** | License validity, expiry date, licensed node limit, node coverage check, expiry and over-limit alerts |
+| **Veeam Kasten — Policies** | Backup & Export Policies and Import & Restore Policies — with schedule, retention, targeted namespaces, label-based selectors, and policy age |
+| **Veeam Kasten — Actions** | Backup Actions, Export Actions, and Restore Actions — each showing policy name, label selectors (for label-based policies), namespace, status badge (Complete / Failed / Skipped / Cancelled / Running), and last run date |
+| **Veeam Kasten — Profiles** | Location profiles with type (`spec.type` e.g. Infra/Location, sub-type e.g. AWS/S3), credential type, bucket, region, and immutable/WORM status |
+| **Namespace Protection** | Per-namespace: covering policy, export profile (WORM badge), PVC count/size, last backup status + date, last export status + date, last restore status + date |
+| **Veeam Kasten — Kanister Resources** | Blueprints (with top-level action names e.g. `preSnapshot`, `postRestore`), BlueprintBindings, TransformSets |
+| **Veeam Kasten — Disaster Recovery** | DR type (QuickDR / LegacyDR), export profile with immutability warning |
+| **Veeam Kasten — Reports** | `k10-system-reports-policy` schedule and recent ReportActions |
 | **Best Practices** | 11 automated checks: unprotected namespaces, policies without export, non-immutable export targets, no immutable profile, DR not configured / DR profile not immutable, label-only selectors, snapshot retention too high or zero, export without explicit retention, no PolicyPresets, NFS/SMB profiles, basic authentication active, no cluster-scoped resource policy |
 
 > If the `kasten-io` namespace is absent, the script also checks for Kasten CRDs. If neither namespace nor CRDs are found, the report is still generated — the Kasten section shows "not installed".
+
+---
+
+## Report navigation
+
+The left sidebar provides direct links to every section. Under **Veeam Kasten**, the following sub-sections are accessible directly:
+
+| Nav entry | Content |
+|-----------|---------|
+| Licences | License validity, node coverage, expiry alerts |
+| Policies | Backup/Export and Import/Restore policy tables |
+| Actions | Backup Actions, Export Actions, Restore Actions |
+| Namespaces | Per-namespace protection, backup/export/restore status and dates |
+| Profiles | Location and infrastructure profiles |
+| Blueprints | Kanister Blueprints and BlueprintBindings |
+| Transformsets | Kasten TransformSets |
+| Disaster Recovery | DR configuration and export profile check |
+| Reports | Reporting policy schedule and recent report runs |
+| Best Practices | Automated best-practice checks |
 
 ---
 
@@ -139,7 +164,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["namespaces", "nodes", "pods", "services", "persistentvolumes",
-                "persistentvolumeclaims", "configmaps", "events"]
+                "persistentvolumeclaims", "configmaps", "events", "secrets"]
     verbs: ["get", "list"]
   - apiGroups: ["storage.k8s.io"]
     resources: ["storageclasses", "csidrivers"]
@@ -160,7 +185,8 @@ rules:
     resources: ["policies", "profiles", "policypresets", "blueprintbindings", "transformsets"]
     verbs: ["get", "list"]
   - apiGroups: ["actions.kio.kasten.io"]
-    resources: ["policyrunactions", "runactions", "backupactions", "restoreactions", "reportactions"]
+    resources: ["policyrunactions", "runactions", "backupactions", "exportactions",
+                "restoreactions", "reportactions"]
     verbs: ["get", "list"]
   - apiGroups: ["apps.kio.kasten.io"]
     resources: ["restorepoints"]
@@ -170,6 +196,7 @@ rules:
     verbs: ["get", "list"]
 ```
 
+> The `secrets` permission is required to read the `k10-license` secret for the License section.  
 > `metrics.k8s.io` access is optional. If `metrics-server` is not installed, the CPU/memory usage columns are shown as N/A — the script continues without error.
 
 ---
@@ -180,13 +207,13 @@ rules:
 
 ![Cluster Overview](img/clusteroverview.png)
 
-*The summary header shows distribution type, Kubernetes version, node count, namespace count, and Veeam Kasten version.*
+*The summary header shows distribution type, Kubernetes version, node count, namespace count, total PVC count and capacity, and Veeam Kasten version.*
 
 ### Namespaces
 
 ![Namespaces](img/namespaces.png)
 
-*All namespaces with status and age.*
+*All namespaces with protection status, policy, export profile, PVC stats, and last backup / export / restore status with dates.*
 
 ### Nodes
 
@@ -194,17 +221,29 @@ rules:
 
 *Node table with role, status, CPU/memory capacity and live usage (when metrics-server is available).*
 
+### Veeam Kasten — License
+
+![Kasten License](img/license.png)
+
+*License validity, expiry date, licensed node count vs actual node count with coverage badge.*
+
 ### Veeam Kasten — Policies
 
 ![Kasten Policies](img/policies.png)
 
-*All backup policies with schedule, retention settings, and last run status.*
+*Backup/Export and Import/Restore policy tables with schedule, retention, targeted namespaces, label selectors, and policy age.*
+
+### Veeam Kasten — Actions
+
+![Kasten Actions](img/actions.png)
+
+*Backup Actions and Export Actions with policy name, label selectors, namespace, status badge, and last run date. Restore Actions with namespace, status, and date.*
 
 ### Veeam Kasten — Location Profiles
 
 ![Kasten Profiles](img/profiles.png)
 
-*Object store and infrastructure profiles configured in Kasten, with endpoint and bucket details.*
+*Object store and infrastructure profiles with type (spec.type / sub-type), credential kind, bucket, region, and immutable/WORM status.*
 
 ### Veeam Kasten — Best Practices
 
@@ -212,3 +251,27 @@ rules:
 
 *Best practice checks and recommendations for your Kasten installation.*
 
+---
+
+## Changelog
+
+### v1.4.0
+- **Overview**: PVC card now shows total storage capacity alongside PVC count
+- **License section**: New section reads the `k10-license` secret and reports validity, expiry date, licensed node limit, and node coverage — with alerts for expiry ≤ 30 days and over-limit
+- **Policies**: Removed "Last Run" column; added "Age" (policy creation age) and "Labels" (label-based namespace selectors displayed as badges)
+- **Import & Restore Policies**: Added "Targeted Namespaces" column; replaced "Last Run" with "Age"
+- **Actions**: New **Backup Actions** and **Export Actions** sections (Name, Policy, Labels, Namespace, Status, Last run); all three action sections (including Restore) now show formatted date instead of relative age
+- **Profiles**: "Type" column now shows `spec.type` (e.g. `Infra`) with sub-type badge (e.g. `AWS`); infra profile credentials resolved from `spec.infra.credential`
+- **Namespace protection**: Added "Last Export" column; all three action columns (Last Backup, Last Export, Last Restore) now show full status badge (OK / Failed / Skipped / Cancelled) and formatted date
+- **Reports**: Fixed frequency display — `k10-system-reports-policy` now correctly shows `@daily` (was empty due to spec-level frequency not being parsed for non-backup actions)
+- **Blueprints**: Fixed empty Actions column — Kanister stores action names at the top-level `actions` key, not inside `spec`
+- **Navigation**: Veeam Kasten sub-navigation restructured to 10 entries: Licences, Policies, Actions, Namespaces, Profiles, Blueprints, Transformsets, Disaster Recovery, Reports, Best Practices
+- **Permissions**: Added `exportactions` and `secrets` to the ClusterRole template
+
+### v1.3.0
+- Added Backup Actions, Restore Actions, Export Actions collection
+- Added Kanister Blueprints, BlueprintBindings, TransformSets
+- Added per-namespace last backup/restore tracking
+- Added failed BackupAction detection per policy and namespace
+- Added label-based namespace selector display in policies
+- Improved DR export profile immutability warnings

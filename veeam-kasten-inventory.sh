@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# veeam-kasten-collector.sh  v1.1.0
+# veeam-kasten-collector.sh  v1.4.0
 #
 # Bash port of the veeam-kasten-collector Go collector.
 # Generates a self-contained HTML report of a Kubernetes cluster state
@@ -13,7 +13,7 @@
 set -euo pipefail
  
 # ─── Metadata ────────────────────────────────────────────────────────────────
-SCRIPT_VERSION="1.3.0"
+SCRIPT_VERSION="1.4.0"
 SCRIPT_NAME="$(basename "$0")"
  
 # ─── ANSI Colors ─────────────────────────────────────────────────────────────
