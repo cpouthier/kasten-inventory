@@ -224,6 +224,14 @@ collect_raw_data() {
     kube_safe get configmap k10-config -n kasten-io -o json \
       > "$TMP_DIR/k10_config.json" 2>/dev/null || \
       echo '{}' > "$TMP_DIR/k10_config.json"
+
+    # K10 License secret
+    log_info "Kasten License..."
+    kube_safe get secret k10-license -n kasten-io -o json \
+      > "$TMP_DIR/kasten_license.json" 2>/dev/null || \
+      echo '{}' > "$TMP_DIR/kasten_license.json"
+    jq empty "$TMP_DIR/kasten_license.json" 2>/dev/null || \
+      echo '{}' > "$TMP_DIR/kasten_license.json"
  
     # Policy Run Actions (for error detection)
     log_info "Kasten Policy Run Actions..."
@@ -316,6 +324,7 @@ collect_raw_data() {
     echo '{"items":[]}' > "$TMP_DIR/kasten_policypresets.json"
     echo '{"items":[]}' > "$TMP_DIR/kasten_restorepoints.json"
     echo '{}'           > "$TMP_DIR/k10_config.json"
+    echo '{}'           > "$TMP_DIR/kasten_license.json"
     echo '{"items":[]}' > "$TMP_DIR/kasten_policyrunactions.json"
     echo '{"items":[]}' > "$TMP_DIR/kasten_runactions.json"
     echo '{"items":[]}' > "$TMP_DIR/kasten_backupactions.json"
@@ -1383,6 +1392,68 @@ def process_failed_backup_actions():
 
     return {"by_policy": by_policy, "by_ns": by_ns}
 
+# ─── License ──────────────────────────────────────────────────────────────────
+def process_license(node_count):
+    """Parse the k10-license secret and return license info dict."""
+    secret = load("kasten_license.json", {})
+    data   = secret.get("data", {})
+    raw_b64 = data.get("license", "")
+    if not raw_b64:
+        return {"found": False}
+
+    try:
+        license_text = base64.b64decode(raw_b64).decode("utf-8", errors="replace")
+    except Exception:
+        return {"found": False, "error": "Could not decode license secret"}
+
+    def _field(pattern, text):
+        m = re.search(pattern, text)
+        return m.group(1).strip().strip('"') if m else ""
+
+    date_start  = _field(r'^datestart\s*:\s*"?([^"\n]+)"?', license_text)
+    date_end    = _field(r'^dateend\s*:\s*"?([^"\n]+)"?',   license_text)
+    nodes_limit = _field(r'nodes\s*:\s*"?(\d+)"?',          license_text)
+    company     = _field(r'^company\s*:\s*"?([^"\n]+)"?',   license_text)
+    product     = _field(r'^product\s*:\s*"?([^"\n]+)"?',   license_text)
+
+    # Validity
+    valid   = False
+    expired = False
+    days_remaining = None
+    try:
+        end_dt = datetime.fromisoformat(date_end.replace("Z", "+00:00"))
+        now_dt = datetime.now(timezone.utc)
+        delta  = end_dt - now_dt
+        days_remaining = delta.days
+        valid   = days_remaining > 0
+        expired = not valid
+    except Exception:
+        pass
+
+    # Coverage
+    try:
+        licensed_nodes = int(nodes_limit)
+        coverage_ok    = node_count <= licensed_nodes
+        over_by        = max(0, node_count - licensed_nodes)
+    except Exception:
+        licensed_nodes = None
+        coverage_ok    = None
+        over_by        = 0
+
+    return {
+        "found":          True,
+        "company":        company,
+        "product":        product,
+        "date_start":     fmt_date(date_start),
+        "date_end":       fmt_date(date_end),
+        "valid":          valid,
+        "expired":        expired,
+        "days_remaining": days_remaining,
+        "licensed_nodes": licensed_nodes,
+        "coverage_ok":    coverage_ok,
+        "over_by":        over_by,
+    }
+
 # ─── Network / CNI ───────────────────────────────────────────────────────────
 def process_network():
     cni_type = "Unknown"
@@ -1487,6 +1558,7 @@ network       = process_network()
 events        = process_events()
 ns_protection = process_namespace_protection()
 failed_backup_actions = process_failed_backup_actions()
+license_info  = process_license(len(nodes_raw))
  
 total_pods   = len(pods)
 running_pods = sum(1 for p in pods if p["status"] == "Running")
@@ -2528,7 +2600,60 @@ def render_kasten():
         )
  
     helm_content = f'<pre class="code-block">{h(kasten["helm_values"])}</pre>'
- 
+
+    # ── License block ────────────────────────────────────────────────────────
+    lic = license_info
+    if not lic.get("found"):
+        license_html = '<div class="alert alert-info">&#x1F511; License secret <code>k10-license</code> not found in namespace <code>kasten-io</code>.</div>'
+    else:
+        # Validity badge
+        if lic.get("expired"):
+            validity_badge = '<span class="badge badge-red">&#x2716; Expired</span>'
+        elif lic.get("days_remaining") is not None and lic["days_remaining"] <= 30:
+            validity_badge = f'<span class="badge badge-yellow">&#x26A0; Expires in {lic["days_remaining"]}d</span>'
+        else:
+            validity_badge = f'<span class="badge badge-green">&#x2713; Valid</span>'
+            if lic.get("days_remaining") is not None:
+                validity_badge += f' <span style="color:var(--text-muted);font-size:11px">({lic["days_remaining"]} days left)</span>'
+
+        # Coverage badge
+        if lic.get("coverage_ok") is True:
+            cov_badge = f'<span class="badge badge-green">&#x2713; OK ({len(nodes_raw)}&nbsp;/&nbsp;{lic["licensed_nodes"]} nodes)</span>'
+        elif lic.get("coverage_ok") is False:
+            cov_badge = (
+                f'<span class="badge badge-red">&#x2716; Over limit</span>'
+                f' <span style="color:var(--red);font-size:11px">'
+                f'{len(nodes_raw)} nodes &gt; {lic["licensed_nodes"]} licensed (+{lic["over_by"]})</span>'
+            )
+        else:
+            cov_badge = '<span class="badge badge-gray">—</span>'
+
+        rows_lic = ""
+        if lic.get("company"):
+            rows_lic += f'<tr><td>Company</td><td>{h(lic["company"])}</td></tr>'
+        if lic.get("product"):
+            rows_lic += f'<tr><td>Product</td><td>{h(lic["product"])}</td></tr>'
+        rows_lic += f'<tr><td>Start date</td><td>{h(lic["date_start"])}</td></tr>'
+        rows_lic += f'<tr><td>End date</td><td>{h(lic["date_end"])}</td></tr>'
+        rows_lic += f'<tr><td>Validity</td><td>{validity_badge}</td></tr>'
+        rows_lic += f'<tr><td>Licensed nodes</td><td>{h(str(lic["licensed_nodes"]))}</td></tr>'
+        rows_lic += f'<tr><td>Node coverage</td><td>{cov_badge}</td></tr>'
+
+        license_html = f'''
+    <div class="table-wrap" style="max-width:600px">
+      <table class="data-table">
+        <thead><tr><th>Field</th><th>Value</th></tr></thead>
+        <tbody>{rows_lic}</tbody>
+      </table>
+    </div>'''
+
+        if lic.get("expired"):
+            license_html += '<div class="alert alert-danger" style="margin-top:8px">&#x2716; <strong>Warning:</strong> The Kasten license has expired. Backup and restore operations may be blocked.</div>'
+        elif lic.get("days_remaining") is not None and lic["days_remaining"] <= 30:
+            license_html += f'<div class="alert alert-warn" style="margin-top:8px">&#x26A0; <strong>Warning:</strong> License expires in <strong>{lic["days_remaining"]} days</strong>. Plan renewal.</div>'
+        if lic.get("coverage_ok") is False:
+            license_html += f'<div class="alert alert-danger" style="margin-top:8px">&#x2716; <strong>Node limit exceeded:</strong> {len(nodes_raw)} cluster nodes exceed the licensed limit of {lic["licensed_nodes"]}. Contact Veeam to update your license.</div>'
+
     return f"""
 <section id="kasten">
   <details class="section-toggle">
@@ -2558,6 +2683,9 @@ def render_kasten():
       </div>
     </div>
  
+    <h3 id="kasten-license">License</h3>
+    {license_html}
+
     <h3>Pods</h3>
     <div class="table-wrap">
       <table class="data-table">
