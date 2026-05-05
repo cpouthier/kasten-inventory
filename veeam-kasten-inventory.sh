@@ -25,6 +25,7 @@ KUBECONFIG_PATH="${KUBECONFIG:-$HOME/.kube/config}"
 OUTPUT_DIR="./build"
 SKIP_HELM=false
 MASK_IPS=false
+EXPORT_JSON=false
 CTX=""
 TIMEOUT=60
  
@@ -58,6 +59,7 @@ ${BOLD}OPTIONS:${NC}
                            (default: ./build)
   --no-helm                Skip Helm values collection (security)
   --no-ip-services         Mask IP addresses in the Services section
+  --json                   Also export a JSON file alongside the HTML report
   --timeout <seconds>      kubectl timeout in seconds (default: 60)
   -h, --help               Show this help
  
@@ -80,6 +82,7 @@ parse_args() {
       --output-dir)     OUTPUT_DIR="$2"; shift 2 ;;
       --no-helm)        SKIP_HELM=true; shift ;;
       --no-ip-services) MASK_IPS=true; shift ;;
+      --json)           EXPORT_JSON=true; shift ;;
       --timeout)        TIMEOUT="$2"; shift 2 ;;
       -h|--help)        usage; exit 0 ;;
       *)                log_error "Unknown option: $1"; usage; exit 1 ;;
@@ -365,10 +368,12 @@ import json, os, sys, base64, gzip, re
 from datetime import datetime, timezone
  
 # ─── Paths ───────────────────────────────────────────────────────────────────
-TMP   = os.environ["KASTEN_TMP_DIR"]
-OUT   = os.environ["KASTEN_OUTPUT"]
-MASK  = os.environ.get("KASTEN_MASK_IPS", "false").lower() == "true"
-SKIP_HELM = os.environ.get("KASTEN_SKIP_HELM", "false").lower() == "true"
+TMP         = os.environ["KASTEN_TMP_DIR"]
+OUT         = os.environ["KASTEN_OUTPUT"]
+JSON_OUT    = os.environ.get("KASTEN_JSON_OUTPUT", "")
+EXPORT_JSON = os.environ.get("KASTEN_EXPORT_JSON", "false").lower() == "true"
+MASK        = os.environ.get("KASTEN_MASK_IPS", "false").lower() == "true"
+SKIP_HELM   = os.environ.get("KASTEN_SKIP_HELM", "false").lower() == "true"
  
 def load(filename, default=None):
     path = os.path.join(TMP, filename)
@@ -3546,8 +3551,83 @@ html = f"""<!DOCTYPE html>
  
 with open(OUT, "w", encoding="utf-8") as f:
     f.write(html)
- 
+
 print(f"Report generated: {OUT}")
+
+# ─── JSON Export ──────────────────────────────────────────────────────────────
+if EXPORT_JSON and JSON_OUT:
+    def _export_json():
+        ns_prot_list = []
+        for ns_name, info in ns_protection.items():
+            entry = {"namespace": ns_name}
+            entry.update(info)
+            for action_key in ("last_backup", "last_export", "last_restore"):
+                act = entry.pop(action_key, None)
+                if act:
+                    entry[action_key + "_state"] = act.get("state", "")
+                    entry[action_key + "_date"]  = act.get("date", "")
+                    entry[action_key + "_error"] = act.get("error", "")
+                else:
+                    entry[action_key + "_state"] = ""
+                    entry[action_key + "_date"]  = ""
+                    entry[action_key + "_error"] = ""
+            ns_prot_list.append(entry)
+
+        payload = {
+            "generated_at": TIMESTAMP,
+            "context":      CONTEXT,
+            "overview": {
+                "node_count":       len(nodes),
+                "ready_nodes":      sum(1 for n in nodes if n["status"] == "Ready"),
+                "pod_count":        total_pods,
+                "running_pods":     running_pods,
+                "namespace_count":  len(ns_protection),
+                "protected_ns":     protected_ns,
+                "warn_events":      warn_events,
+                "total_events":     len(events),
+                "kasten_version":   kasten.get("version", ""),
+                "kasten_installed": kasten.get("installed", False),
+            },
+            "license":    license_info,
+            "nodes":      nodes,
+            "pods":       pods,
+            "services":   services,
+            "storage": {
+                "storage_classes":          storage.get("storage_classes", []),
+                "persistent_volumes":       storage.get("pvs", []),
+                "persistent_volume_claims": storage.get("pvcs", []),
+                "csi_drivers":              storage.get("csi_drivers", []),
+                "volume_snapshot_classes":  storage.get("vsc", []),
+            },
+            "crds":    crds,
+            "operators": operators,
+            "network": {
+                "cni_type":         network.get("cni_type", ""),
+                "cni_pods":         network.get("cni_pods", []),
+                "network_policies": network.get("network_policies", []),
+            },
+            "events": events,
+            "kasten": {
+                "policies":           kasten.get("policies", []),
+                "import_policies":    kasten.get("import_policies", []),
+                "backup_actions":     kasten.get("backup_actions", []),
+                "export_actions":     kasten.get("export_actions", []),
+                "restore_actions":    kasten.get("restore_actions", []),
+                "profiles":           kasten.get("profiles", []),
+                "blueprints":         kasten.get("blueprints", []),
+                "blueprint_bindings": kasten.get("blueprint_bindings", []),
+                "transform_sets":     kasten.get("transform_sets", []),
+                "dr":                 kasten.get("dr", {}),
+                "reports":            kasten.get("reports", {}),
+            },
+            "namespace_protection": ns_prot_list,
+        }
+
+        with open(JSON_OUT, "w", encoding="utf-8") as jf:
+            json.dump(payload, jf, indent=2, default=str)
+        print(f"JSON export:      {JSON_OUT}")
+
+    _export_json()
 PYEOF
 }
  
@@ -3592,12 +3672,19 @@ main() {
   export KASTEN_OUTPUT="$OUTPUT_FILE"
   export KASTEN_MASK_IPS="$MASK_IPS"
   export KASTEN_SKIP_HELM="$SKIP_HELM"
+  export KASTEN_EXPORT_JSON="$EXPORT_JSON"
  
   # Run the generator
+  JSON_FILE="${OUTPUT_FILE%.html}.json"
+  export KASTEN_JSON_OUTPUT="$JSON_FILE"
+
   if python3 "$TMP_DIR/generate_html.py"; then
     echo ""
     echo -e "${GREEN}${BOLD}✓ Report generated successfully!${NC}"
-    echo -e "  ${BOLD}File:${NC} $(realpath "$OUTPUT_FILE" 2>/dev/null || echo "$OUTPUT_FILE")"
+    echo -e "  ${BOLD}HTML:${NC} $(realpath "$OUTPUT_FILE" 2>/dev/null || echo "$OUTPUT_FILE")"
+    if [[ "$EXPORT_JSON" == "true" ]]; then
+      echo -e "  ${BOLD}JSON:${NC} $(realpath "$JSON_FILE" 2>/dev/null || echo "$JSON_FILE")"
+    fi
     echo ""
   else
     log_error "HTML report generation failed."

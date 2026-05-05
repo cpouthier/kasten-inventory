@@ -1,6 +1,6 @@
 # Veeam Kasten Inventory Collector
 
-**`veeam-kasten-inventory.sh` v1.4.0** — A self-contained Bash script that collects Kubernetes cluster and Veeam Kasten information and generates a single, portable HTML report.
+**`veeam-kasten-inventory.sh` v1.4.1** — A self-contained Bash script that collects Kubernetes cluster and Veeam Kasten information and generates a single, portable HTML report.
 
 The report can be shared, opened offline in any browser, and requires no external dependencies at viewing time.
 
@@ -117,6 +117,7 @@ OPTIONS:
                            (default: ./build)
   --no-helm                Skip Helm values collection (recommended for security-sensitive environments)
   --no-ip-services         Mask IP addresses in the Services section
+  --json                   Also export a JSON file alongside the HTML report
   --timeout <seconds>      kubectl request timeout in seconds (default: 60)
   -h, --help               Show this help
 ```
@@ -135,6 +136,9 @@ OPTIONS:
 
 # Run against a remote cluster context
 ./veeam-kasten-inventory.sh --context aks-westeurope --output-dir ./reports/aks-westeurope
+
+# Export both HTML and JSON (e.g. for Splunk ingestion)
+./veeam-kasten-inventory.sh --json --output-dir ./reports
 ```
 
 ---
@@ -145,10 +149,39 @@ After the script completes, the HTML report is saved in the output directory (de
 
 ```
 ./build/
-└── veeam-kasten-inventory-<context>-<timestamp>.html
+└── inventory-<timestamp>.html
 ```
 
 Open the file in any browser — no internet connection or server required.
+
+### JSON export
+
+When `--json` is passed, a JSON file is written alongside the HTML report with the same base name:
+
+```
+./build/
+├── inventory-<timestamp>.html
+└── inventory-<timestamp>.json
+```
+
+The JSON file contains all collected data in a flat, machine-readable structure suitable for ingestion into Splunk, Elasticsearch, or any JSON-capable monitoring tool:
+
+| Top-level key | Content |
+|---------------|---------|
+| `generated_at` | Report generation timestamp (UTC) |
+| `context` | Kubernetes context name |
+| `overview` | Node/pod/namespace/event counts, Kasten version |
+| `license` | License validity, expiry, node coverage |
+| `nodes` | Node list with roles, status, CPU/memory |
+| `pods` | All pods with phase, restarts, resources |
+| `services` | Services with type, IPs, ports |
+| `storage` | StorageClasses, PVs, PVCs, CSI drivers, VolumeSnapshotClasses |
+| `crds` | All CRDs with group, scope, kind |
+| `operators` | OLM ClusterServiceVersions |
+| `network` | CNI type, CNI pods, NetworkPolicies |
+| `events` | All events with type, reason, message |
+| `kasten` | Policies, actions (backup/export/restore), profiles, blueprints, DR, reports |
+| `namespace_protection` | Per-namespace protection status with flattened `last_backup_state`, `last_backup_date`, `last_export_state`, `last_export_date`, `last_restore_state`, `last_restore_date` fields |
 
 ---
 
@@ -254,6 +287,9 @@ rules:
 ---
 
 ## Changelog
+
+### v1.4.1
+- **JSON export**: New `--json` flag writes a `.json` file alongside the HTML report, containing all collected data (nodes, pods, storage, Kasten policies/actions/profiles, namespace protection, license, events, etc.) in a flat, machine-readable structure suitable for Splunk, Elasticsearch, or any JSON-capable monitoring tool
 
 ### v1.4.0
 - **Overview**: PVC card now shows total storage capacity alongside PVC count
