@@ -4,6 +4,8 @@
 
 The report can be shared, opened offline in any browser, and requires no external dependencies at viewing time.
 
+If you deployed Veeam Kasten in another namespace than kasten-io, take your fav
+
 ---
 
 ## What it collects
